@@ -969,12 +969,19 @@ function globalKeydown(e) {
     return;
   }
   if (e.key === "Enter" && activeMode === "broom" && pickerTarget && !isOurUI(e.target)) {
+    if (e.repeat) return; // ignore key auto-repeat — one wipe per press
     e.preventDefault();
     e.stopPropagation();
     const target = pickerTarget;
     const selector = buildSelector(target);
-    stopPicker();
-    void playSweepAndHide(target, selector);
+    // Stay in brooming mode so the user can wipe multiple elements in a row.
+    // Just clear the current target + visuals; the next mouseover repopulates.
+    pickerTarget = null;
+    document.getElementById(HIGHLIGHT_ID)?.style.setProperty("opacity", "0");
+    hideSelectorTag();
+    void playSweepAndHide(target, selector).then(() => {
+      document.getElementById(HIGHLIGHT_ID)?.style.removeProperty("opacity");
+    });
   }
 }
 
