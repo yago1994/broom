@@ -151,11 +151,31 @@ const PANEL_ID = "broom-panel";
 
 let pickerActive = false;
 let pickerTarget = null;
+let broomCursorDataUrl = null;
+
+// Draw 🧹 onto a canvas and export as a CSS cursor data URL.
+function getBroomCursorUrl() {
+  if (broomCursorDataUrl) return broomCursorDataUrl;
+  try {
+    const size = 40;
+    const canvas = document.createElement("canvas");
+    canvas.width = size;
+    canvas.height = size;
+    const ctx = canvas.getContext("2d");
+    ctx.font = `${size * 0.85}px serif`;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText("🧹", size / 2, size / 2);
+    broomCursorDataUrl = canvas.toDataURL();
+  } catch {
+    broomCursorDataUrl = null;
+  }
+  return broomCursorDataUrl;
+}
 
 function startPicker() {
   if (pickerActive) return;
   pickerActive = true;
-  document.documentElement.classList.add("broom-picking");
   injectPickerStyles();
   ensureHighlight();
   document.addEventListener("mouseover", onOver, true);
@@ -166,7 +186,6 @@ function startPicker() {
 function stopPicker() {
   if (!pickerActive) return;
   pickerActive = false;
-  document.documentElement.classList.remove("broom-picking");
   document.getElementById(HIGHLIGHT_ID)?.remove();
   document.removeEventListener("mouseover", onOver, true);
   document.removeEventListener("click", onClick, true);
@@ -174,23 +193,151 @@ function stopPicker() {
 }
 
 function injectPickerStyles() {
-  if (document.getElementById(OVERLAY_STYLE_ID)) return;
+  const cursorUrl = getBroomCursorUrl();
+  // hotspot at bottom-left of broom (tip of the handle): 4px from left, 36px down
+  const cursorValue = cursorUrl
+    ? `url('${cursorUrl}') 4 36, crosshair`
+    : "crosshair";
+
+  if (document.getElementById(OVERLAY_STYLE_ID)) {
+    // update cursor in case it wasn't ready before
+    document.getElementById(OVERLAY_STYLE_ID).textContent = pickerStylesheet(cursorValue);
+    return;
+  }
   const s = document.createElement("style");
   s.id = OVERLAY_STYLE_ID;
-  s.textContent = `
-    html.broom-picking, html.broom-picking * { cursor: crosshair !important; user-select: none !important; }
-    #${HIGHLIGHT_ID} { position:fixed; pointer-events:none; z-index:2147483646; border:2px solid #2563eb; background:rgba(37,99,235,0.12); border-radius:2px; transition:top 60ms,left 60ms,width 60ms,height 60ms; }
-    #${PANEL_ID} { position:fixed; z-index:2147483647; bottom:16px; right:16px; width:340px; background:#fff; color:#111; border:1px solid #ddd; border-radius:8px; box-shadow:0 8px 24px rgba(0,0,0,.18); font:13px -apple-system,system-ui,sans-serif; padding:12px; }
-    #${PANEL_ID} h3 { margin:0 0 6px; font-size:13px; font-weight:600; }
-    #${PANEL_ID} .broom-sel { font-family:ui-monospace,monospace; font-size:11px; color:#444; word-break:break-all; background:#f6f6f6; padding:4px 6px; border-radius:3px; }
-    #${PANEL_ID} .broom-row { display:flex; gap:6px; margin-top:8px; flex-wrap:wrap; align-items:center; }
-    #${PANEL_ID} button { font:inherit; padding:5px 9px; border:1px solid #ccc; background:#f7f7f7; border-radius:4px; cursor:pointer; }
-    #${PANEL_ID} button.primary { background:#2563eb; color:#fff; border-color:#2563eb; }
-    #${PANEL_ID} textarea { width:100%; box-sizing:border-box; min-height:56px; margin-top:8px; font:inherit; padding:6px; border:1px solid #ccc; border-radius:4px; resize:vertical; }
-    #${PANEL_ID} .broom-err { color:#b00; font-size:12px; margin-top:6px; }
-    #${PANEL_ID} .broom-muted { color:#666; font-size:11px; }
-  `;
+  s.textContent = pickerStylesheet(cursorValue);
   document.documentElement.appendChild(s);
+}
+
+function pickerStylesheet(cursorValue) {
+  return `
+    html.broom-picking, html.broom-picking * {
+      cursor: ${cursorValue} !important;
+      user-select: none !important;
+    }
+    #${HIGHLIGHT_ID} {
+      position: fixed; pointer-events: none; z-index: 2147483645;
+      border: 2px solid #2563eb;
+      background: rgba(37,99,235,0.10);
+      border-radius: 4px;
+      box-shadow: 0 0 0 1px rgba(37,99,235,0.18), 0 4px 16px rgba(37,99,235,0.14);
+      transition: top 55ms ease-out, left 55ms ease-out, width 55ms ease-out, height 55ms ease-out;
+    }
+    /* ── Panel ─────────────────────────────── */
+    #${PANEL_ID} {
+      all: initial;
+      position: fixed !important;
+      z-index: 2147483647 !important;
+      bottom: 20px !important;
+      right: 20px !important;
+      width: 360px !important;
+      font: 13px/1.45 -apple-system, system-ui, sans-serif !important;
+      color-scheme: light dark !important;
+
+      /* glass card — matches semai onboarding cards */
+      background: rgba(255,255,255,0.88) !important;
+      border: 1px solid rgba(148,163,184,0.28) !important;
+      border-radius: 20px !important;
+      box-shadow: 0 24px 60px rgba(15,23,42,0.20), 0 2px 8px rgba(15,23,42,0.08) !important;
+      backdrop-filter: blur(18px) saturate(1.4) !important;
+      -webkit-backdrop-filter: blur(18px) saturate(1.4) !important;
+      padding: 18px !important;
+      box-sizing: border-box !important;
+
+      /* slide-in animation */
+      animation: broom-panel-in 0.22s cubic-bezier(0.22,1,0.36,1) both !important;
+    }
+    @keyframes broom-panel-in {
+      from { opacity: 0; transform: translateY(12px) scale(0.97); }
+      to   { opacity: 1; transform: translateY(0)   scale(1); }
+    }
+    #${PANEL_ID} * { all: revert; box-sizing: border-box; }
+
+    #${PANEL_ID} .bp-header {
+      display: flex; align-items: center; gap: 8px; margin-bottom: 12px;
+    }
+    #${PANEL_ID} .bp-icon { font-size: 20px; line-height: 1; }
+    #${PANEL_ID} .bp-title {
+      font-size: 14px; font-weight: 700; color: #0f172a; margin: 0; flex: 1;
+    }
+    #${PANEL_ID} .bp-close {
+      all: unset; cursor: pointer; font-size: 18px; line-height: 1;
+      color: #94a3b8; padding: 2px 4px; border-radius: 6px;
+    }
+    #${PANEL_ID} .bp-close:hover { color: #475569; background: rgba(0,0,0,0.06); }
+
+    #${PANEL_ID} .bp-sel {
+      font-family: ui-monospace, "Cascadia Code", monospace;
+      font-size: 11px; color: #64748b; word-break: break-all;
+      background: rgba(241,245,249,0.9); border: 1px solid rgba(148,163,184,0.22);
+      padding: 5px 8px; border-radius: 8px; margin-bottom: 14px;
+      max-height: 48px; overflow: hidden;
+    }
+
+    #${PANEL_ID} .bp-actions {
+      display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 4px;
+    }
+    #${PANEL_ID} .bp-btn {
+      all: unset; cursor: pointer;
+      display: inline-flex; align-items: center; justify-content: center;
+      padding: 7px 14px; border-radius: 999px; font-size: 13px; font-weight: 600;
+      border: 1px solid rgba(148,163,184,0.32);
+      background: rgba(255,255,255,0.7);
+      color: #334155;
+      transition: filter 0.12s, box-shadow 0.12s, transform 0.1s;
+    }
+    #${PANEL_ID} .bp-btn:hover { filter: brightness(0.96); box-shadow: 0 2px 8px rgba(0,0,0,0.10); }
+    #${PANEL_ID} .bp-btn:active { transform: scale(0.97); }
+    #${PANEL_ID} .bp-btn.primary {
+      background: linear-gradient(135deg, #2563eb, #7c3aed);
+      color: #fff; border-color: transparent;
+      box-shadow: 0 6px 18px rgba(37,99,235,0.28);
+    }
+    #${PANEL_ID} .bp-btn.primary:hover { filter: brightness(1.08); box-shadow: 0 8px 22px rgba(37,99,235,0.36); }
+
+    #${PANEL_ID} .bp-llm { margin-top: 14px; }
+    #${PANEL_ID} .bp-label {
+      font-size: 11px; font-weight: 600; color: #64748b;
+      text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 6px;
+    }
+    #${PANEL_ID} textarea {
+      all: unset; display: block; width: 100%; box-sizing: border-box;
+      min-height: 64px; padding: 10px 12px;
+      font: 13px/1.5 -apple-system, system-ui, sans-serif; color: #0f172a;
+      background: rgba(255,255,255,0.8); border: 1px solid rgba(148,163,184,0.32);
+      border-radius: 12px; resize: vertical; outline: none;
+      transition: border-color 0.15s, box-shadow 0.15s;
+      user-select: text !important; -webkit-user-select: text !important; cursor: text !important;
+    }
+    #${PANEL_ID} textarea:focus {
+      border-color: rgba(37,99,235,0.5);
+      box-shadow: 0 0 0 3px rgba(37,99,235,0.12);
+    }
+    #${PANEL_ID} textarea::placeholder { color: #94a3b8; }
+    #${PANEL_ID} .bp-submit-row {
+      display: flex; align-items: center; gap: 10px; margin-top: 10px;
+    }
+    #${PANEL_ID} .bp-status { font-size: 12px; color: #64748b; }
+    #${PANEL_ID} .bp-err {
+      margin-top: 8px; padding: 8px 10px; border-radius: 10px;
+      background: rgba(254,226,226,0.8); border: 1px solid rgba(239,68,68,0.2);
+      color: #b91c1c; font-size: 12px; line-height: 1.4;
+    }
+
+    @media (prefers-color-scheme: dark) {
+      #${PANEL_ID} {
+        background: rgba(15,23,42,0.82) !important;
+        border-color: rgba(148,163,184,0.18) !important;
+        color: #f8fafc !important;
+      }
+      #${PANEL_ID} .bp-title { color: #f1f5f9; }
+      #${PANEL_ID} .bp-sel { background: rgba(30,41,59,0.8); border-color: rgba(148,163,184,0.16); color: #94a3b8; }
+      #${PANEL_ID} .bp-btn { background: rgba(30,41,59,0.7); color: #e2e8f0; border-color: rgba(148,163,184,0.22); }
+      #${PANEL_ID} textarea { background: rgba(15,23,42,0.7); border-color: rgba(148,163,184,0.22); color: #f1f5f9; }
+      #${PANEL_ID} .bp-err { background: rgba(127,29,29,0.4); border-color: rgba(239,68,68,0.3); color: #fca5a5; }
+    }
+  `;
 }
 
 function ensureHighlight() {
@@ -208,7 +355,12 @@ function onOver(e) {
   pickerTarget = e.target;
   const r = e.target.getBoundingClientRect();
   const h = document.getElementById(HIGHLIGHT_ID);
-  if (h) { h.style.cssText = `position:fixed;pointer-events:none;z-index:2147483646;border:2px solid #2563eb;background:rgba(37,99,235,0.12);border-radius:2px;top:${r.top}px;left:${r.left}px;width:${r.width}px;height:${r.height}px;`; }
+  if (h) {
+    Object.assign(h.style, {
+      top: `${r.top}px`, left: `${r.left}px`,
+      width: `${r.width}px`, height: `${r.height}px`,
+    });
+  }
 }
 
 function onClick(e) {
@@ -227,26 +379,32 @@ function openPanel(el) {
   const panel = document.createElement("div");
   panel.id = PANEL_ID;
   panel.innerHTML = `
-    <h3>Modify this element</h3>
-    <div class="broom-sel"></div>
-    <div class="broom-row">
-      <button data-type="hide" class="primary">Hide</button>
-      <button data-type="restyle">Restyle…</button>
-      <button data-type="inject">Inject text…</button>
-      <button id="broom-cancel">Cancel</button>
+    <div class="bp-header">
+      <span class="bp-icon">🧹</span>
+      <span class="bp-title">Modify element</span>
+      <button class="bp-close" id="broom-cancel" title="Close (Esc)">✕</button>
     </div>
-    <div id="broom-llm" style="display:none">
-      <textarea id="broom-instruction" placeholder="Describe what you want…"></textarea>
-      <div class="broom-row">
-        <button class="primary" id="broom-submit">Generate</button>
-        <span class="broom-muted" id="broom-status"></span>
+    <div class="bp-sel"></div>
+    <div class="bp-actions">
+      <button class="bp-btn primary" data-type="hide">Hide</button>
+      <button class="bp-btn" data-type="restyle">Restyle…</button>
+      <button class="bp-btn" data-type="inject">Inject…</button>
+    </div>
+    <div class="bp-llm" id="broom-llm" style="display:none">
+      <div class="bp-label" id="broom-llm-label">Describe the change</div>
+      <textarea id="broom-instruction" placeholder="e.g. make the font larger and blue, remove the sidebar…"></textarea>
+      <div class="bp-submit-row">
+        <button class="bp-btn primary" id="broom-submit">Generate</button>
+        <span class="bp-status" id="broom-status"></span>
       </div>
-      <div class="broom-err" id="broom-err"></div>
+      <div class="bp-err" id="broom-err" style="display:none"></div>
     </div>`;
-  panel.querySelector(".broom-sel").textContent = selector;
+
+  panel.querySelector(".bp-sel").textContent = selector;
   document.documentElement.appendChild(panel);
 
   const llmBox = panel.querySelector("#broom-llm");
+  const llmLabel = panel.querySelector("#broom-llm-label");
   const instruction = panel.querySelector("#broom-instruction");
   const statusEl = panel.querySelector("#broom-status");
   const errEl = panel.querySelector("#broom-err");
@@ -263,6 +421,8 @@ function openPanel(el) {
         return;
       }
       pendingType = t;
+      const labels = { restyle: "Describe the style change", inject: "What text should appear?" };
+      llmLabel.textContent = labels[t] || "Describe the change";
       llmBox.style.display = "block";
       instruction.focus();
     });
@@ -271,7 +431,7 @@ function openPanel(el) {
   panel.querySelector("#broom-cancel").addEventListener("click", closePanel);
 
   panel.querySelector("#broom-submit").addEventListener("click", async () => {
-    errEl.textContent = "";
+    errEl.style.display = "none";
     statusEl.textContent = "Thinking…";
     try {
       const res = await chrome.runtime.sendMessage({
@@ -283,10 +443,11 @@ function openPanel(el) {
       });
       if (!res?.ok) throw new Error(res?.error || "Unknown error");
       if (!safeQueryAll(res.rule.selector.primary).length) throw new Error(`Selector matched nothing: ${res.rule.selector.primary}`);
-      applyRule(res.rule); // already persisted by background worker
+      applyRule(res.rule);
       closePanel();
     } catch (e) {
       errEl.textContent = e.message;
+      errEl.style.display = "block";
       statusEl.textContent = "";
     }
   });
