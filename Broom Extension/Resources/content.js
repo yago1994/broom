@@ -194,6 +194,7 @@ function stopPicker() {
   document.documentElement.classList.remove("broom-picking");
   document.getElementById(LAUNCHER_ID)?.classList.remove("active");
   document.getElementById(HIGHLIGHT_ID)?.remove();
+  hideSelectorTag();
   document.removeEventListener("mouseover", onOver, true);
   document.removeEventListener("click", onClick, true);
 }
@@ -373,18 +374,99 @@ function pickerStylesheet(cursorValue) {
       transition: transform 0.2s cubic-bezier(.4,1.6,.5,1), box-shadow 0.18s !important;
       font-family: -apple-system, system-ui, sans-serif !important;
       padding: 0 !important;
+      animation: bsweep-launcher-enter 0.85s cubic-bezier(.34,1.56,.64,1) both !important;
     }
     #${LAUNCHER_ID}:hover { transform: scale(1.1) rotate(-8deg) !important; box-shadow: 0 12px 30px rgba(15,23,42,0.24) !important; }
-    #${LAUNCHER_ID}:active { transform: scale(0.95) !important; }
+    #${LAUNCHER_ID}:active { transform: scale(0.92) rotate(-12deg) !important; }
+    #${LAUNCHER_ID}.squash { animation: bsweep-launcher-squash 0.32s cubic-bezier(.34,1.56,.64,1) !important; }
     #${LAUNCHER_ID}.active {
       background: linear-gradient(135deg, #2563eb, #7c3aed) !important;
       border-color: transparent !important;
       box-shadow: 0 10px 28px rgba(37,99,235,0.42) !important;
       animation: bsweep-launcher-wiggle 0.7s ease-in-out infinite alternate !important;
     }
+    @keyframes bsweep-launcher-enter {
+      0%   { transform: translateY(-140px) rotate(-25deg) scale(0.6); opacity: 0; }
+      55%  { transform: translateY(8px)    rotate(8deg)   scale(1.08); opacity: 1; }
+      75%  { transform: translateY(-3px)   rotate(-4deg)  scale(0.97); }
+      100% { transform: translateY(0)      rotate(0)      scale(1); opacity: 1; }
+    }
     @keyframes bsweep-launcher-wiggle {
       from { transform: rotate(-10deg); }
       to   { transform: rotate(10deg); }
+    }
+    @keyframes bsweep-launcher-squash {
+      0%   { transform: scale(1); }
+      35%  { transform: scale(1.25, 0.78); }
+      70%  { transform: scale(0.86, 1.16); }
+      100% { transform: scale(1); }
+    }
+
+    /* ── Selector tooltip ────────────────────── */
+    #broom-tag {
+      all: initial !important;
+      position: fixed !important;
+      pointer-events: none !important;
+      z-index: 2147483646 !important;
+      padding: 4px 8px !important;
+      border-radius: 6px !important;
+      background: rgba(15,23,42,0.92) !important;
+      color: #fff !important;
+      font: 600 11px/1.2 ui-monospace, "Cascadia Code", monospace !important;
+      letter-spacing: 0.02em !important;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.18) !important;
+      animation: bsweep-tag-pop 0.18s cubic-bezier(.34,1.56,.64,1) !important;
+      white-space: nowrap !important;
+      max-width: 320px !important;
+      overflow: hidden !important;
+      text-overflow: ellipsis !important;
+    }
+    @keyframes bsweep-tag-pop {
+      from { opacity: 0; transform: translateY(4px) scale(0.92); }
+      to   { opacity: 1; transform: translateY(0) scale(1); }
+    }
+
+    /* Pulsing highlight while picking */
+    html.broom-picking #${HIGHLIGHT_ID} {
+      animation: bsweep-highlight-pulse 1.4s ease-in-out infinite !important;
+    }
+    @keyframes bsweep-highlight-pulse {
+      0%, 100% { box-shadow: 0 0 0 1px rgba(37,99,235,0.18), 0 4px 16px rgba(37,99,235,0.14); }
+      50%      { box-shadow: 0 0 0 4px rgba(37,99,235,0.28), 0 8px 24px rgba(37,99,235,0.30); }
+    }
+
+    /* Element click "pop" acknowledgment */
+    @keyframes bsweep-target-pop {
+      0%   { transform: scale(1); }
+      40%  { transform: scale(0.95); }
+      100% { transform: scale(1); }
+    }
+
+    /* Sparkle puffs spawned at click points */
+    .bsweep-puff {
+      position: fixed !important;
+      pointer-events: none !important;
+      z-index: 2147483645 !important;
+      font-size: 14px !important;
+      line-height: 1 !important;
+      opacity: 0 !important;
+      animation: bsweep-puff 0.7s cubic-bezier(.2,.8,.4,1) forwards !important;
+      filter: drop-shadow(0 0 6px rgba(250,204,21,0.7)) !important;
+      will-change: transform, opacity !important;
+    }
+    @keyframes bsweep-puff {
+      0%   { opacity: 0; transform: translate(-50%, -50%) scale(0.3); }
+      20%  { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+      100% { opacity: 0; transform: translate(calc(-50% + var(--bx,0px)), calc(-50% + var(--by,0px))) scale(0.5) rotate(180deg); }
+    }
+
+    /* Screen shake — used at sweep finale */
+    html.bsweep-shake { animation: bsweep-shake 0.32s cubic-bezier(.36,.07,.19,.97) !important; }
+    @keyframes bsweep-shake {
+      10%, 90%  { transform: translate(-1px, 0); }
+      20%, 80%  { transform: translate(2px, 0); }
+      30%, 50%, 70% { transform: translate(-3px, 1px); }
+      40%, 60%  { transform: translate(3px, -1px); }
     }
 
     /* ── Sweep animation ─────────────────────── */
@@ -416,6 +498,37 @@ function pickerStylesheet(cursorValue) {
       40%  { opacity: 0.85; filter: blur(0.5px); transform: scale(0.99); }
       100% { opacity: 0; filter: blur(8px); transform: scale(0.92); }
     }
+
+    /* ── Panel feedback states ───────────────── */
+    #${PANEL_ID}.thinking .bp-btn.primary {
+      background: linear-gradient(110deg, #2563eb 30%, #93c5fd 50%, #7c3aed 70%) !important;
+      background-size: 220% 100% !important;
+      animation: bsweep-shimmer 1.1s linear infinite !important;
+      pointer-events: none !important;
+    }
+    @keyframes bsweep-shimmer {
+      from { background-position: 220% 0; }
+      to   { background-position: -120% 0; }
+    }
+    #${PANEL_ID}.success {
+      animation: bsweep-success 0.55s ease-out !important;
+    }
+    @keyframes bsweep-success {
+      0%, 100% { box-shadow: 0 24px 60px rgba(15,23,42,0.20), 0 2px 8px rgba(15,23,42,0.08); }
+      40%      { box-shadow: 0 0 0 4px rgba(34,197,94,0.45), 0 24px 60px rgba(15,23,42,0.20); }
+    }
+
+    /* ── Reduced motion ──────────────────────── */
+    @media (prefers-reduced-motion: reduce) {
+      #${LAUNCHER_ID}, #${LAUNCHER_ID}.active, #${LAUNCHER_ID}.squash,
+      .${SWEEP_ID} .bsweep-broom, .${SWEEP_ID} .bsweep-sparkle,
+      #broom-tag, html.broom-picking #${HIGHLIGHT_ID},
+      html.bsweep-shake, .bsweep-puff,
+      #${PANEL_ID}, #${PANEL_ID}.thinking .bp-btn.primary, #${PANEL_ID}.success {
+        animation: none !important;
+        transition: none !important;
+      }
+    }
   `;
 }
 
@@ -427,7 +540,75 @@ function ensureHighlight() {
   }
 }
 
-function isOurUI(el) { return !!el?.closest?.(OUR_UI_SELECTOR); }
+function isOurUI(el) { return !!el?.closest?.(OUR_UI_SELECTOR + ",#broom-tag,.bsweep-puff"); }
+
+// ── Juice helpers ─────────────────────────────────────────────────────────────
+
+const SPARKLE_GLYPHS = ["✨", "✦", "✧", "⭐", "💫"];
+
+// Spawn a small burst of sparkles at viewport coords (for clicks/successes).
+function spawnSparklePuff(x, y, count = 6, spread = 60) {
+  for (let i = 0; i < count; i++) {
+    const s = document.createElement("div");
+    s.className = "bsweep-puff";
+    s.textContent = SPARKLE_GLYPHS[i % SPARKLE_GLYPHS.length];
+    const angle = (i / count) * Math.PI * 2 + Math.random() * 0.6;
+    const dist = spread * (0.6 + Math.random() * 0.8);
+    s.style.left = `${x}px`;
+    s.style.top = `${y}px`;
+    s.style.fontSize = `${10 + Math.random() * 8}px`;
+    s.style.setProperty("--bx", `${Math.cos(angle) * dist}px`);
+    s.style.setProperty("--by", `${Math.sin(angle) * dist - 10}px`);
+    s.style.animationDelay = `${Math.random() * 80}ms`;
+    document.documentElement.appendChild(s);
+    setTimeout(() => s.remove(), 900);
+  }
+}
+
+let tagEl = null;
+function showSelectorTag(el) {
+  if (!tagEl) {
+    tagEl = document.createElement("div");
+    tagEl.id = "broom-tag";
+    document.documentElement.appendChild(tagEl);
+  }
+  // Compact label: tag + first stable class or id
+  const tag = el.tagName.toLowerCase();
+  let extra = "";
+  if (el.id) extra = `#${el.id}`;
+  else if (el.classList.length) extra = `.${[...el.classList].slice(0, 2).join(".")}`;
+  tagEl.textContent = `${tag}${extra}`;
+  // Position above the target rect; clamp to viewport
+  const r = el.getBoundingClientRect();
+  const top = Math.max(8, r.top - 26);
+  const left = Math.max(8, Math.min(innerWidth - 200, r.left));
+  tagEl.style.top = `${top}px`;
+  tagEl.style.left = `${left}px`;
+}
+function hideSelectorTag() {
+  tagEl?.remove();
+  tagEl = null;
+}
+
+function screenShake() {
+  const html = document.documentElement;
+  html.classList.remove("bsweep-shake");
+  // force reflow so the animation restarts
+  void html.offsetWidth;
+  html.classList.add("bsweep-shake");
+  setTimeout(() => html.classList.remove("bsweep-shake"), 360);
+}
+
+// Brief pop on the target element to acknowledge selection, then call cb.
+function popTargetThen(el, cb) {
+  if (!el?.isConnected) { cb(); return; }
+  const prev = el.style.animation;
+  el.style.animation = "bsweep-target-pop 0.22s cubic-bezier(.34,1.56,.64,1)";
+  setTimeout(() => {
+    if (el.isConnected) el.style.animation = prev;
+    cb();
+  }, 180);
+}
 
 function onOver(e) {
   if (!pickerActive || isOurUI(e.target)) return;
@@ -440,6 +621,7 @@ function onOver(e) {
       width: `${r.width}px`, height: `${r.height}px`,
     });
   }
+  showSelectorTag(e.target);
 }
 
 function onClick(e) {
@@ -447,8 +629,10 @@ function onClick(e) {
   e.preventDefault(); e.stopPropagation();
   pickerTarget = e.target;
   const target = e.target;
+  spawnSparklePuff(e.clientX, e.clientY, 6, 50);
   stopPicker();
-  openPanel(target);
+  // Brief pop before opening the panel — acknowledges the click
+  popTargetThen(target, () => openPanel(target));
 }
 
 // Global keydown — always active. Esc exits brooming/closes panel.
@@ -484,6 +668,12 @@ function installLauncher() {
   btn.addEventListener("click", (e) => {
     e.preventDefault();
     e.stopPropagation();
+    btn.classList.remove("squash");
+    void btn.offsetWidth; // restart animation
+    btn.classList.add("squash");
+    setTimeout(() => btn.classList.remove("squash"), 360);
+    const r = btn.getBoundingClientRect();
+    spawnSparklePuff(r.left + r.width / 2, r.top + r.height / 2, 8, 70);
     togglePicker();
   }, true);
   document.documentElement.appendChild(btn);
@@ -573,6 +763,14 @@ async function playSweepAndHide(el, selector) {
   const prevAnim = el.style.animation;
   el.style.animation = "bsweep-target 0.95s ease-in forwards";
 
+  // Final burst as the broom exits — fired ~200ms before the rule lands
+  setTimeout(() => {
+    const cx = rect.left + rect.width * 0.2;
+    const cy = rect.top + rect.height / 2;
+    spawnSparklePuff(cx, cy, 10, Math.max(60, rect.width * 0.4));
+    screenShake();
+  }, 760);
+
   await new Promise((r) => setTimeout(r, 950));
 
   // Persist rule (display:none takes over from the animation).
@@ -643,6 +841,7 @@ function openPanel(el) {
   panel.querySelector("#broom-submit").addEventListener("click", async () => {
     errEl.style.display = "none";
     statusEl.textContent = "Thinking…";
+    panel.classList.add("thinking");
     try {
       const res = await chrome.runtime.sendMessage({
         type: "BG_GENERATE_RULE",
@@ -654,8 +853,17 @@ function openPanel(el) {
       if (!res?.ok) throw new Error(res?.error || "Unknown error");
       if (!safeQueryAll(res.rule.selector.primary).length) throw new Error(`Selector matched nothing: ${res.rule.selector.primary}`);
       applyRule(res.rule);
-      closePanel();
+      // Success feedback: panel glows green, target sparkles, then close
+      panel.classList.remove("thinking");
+      panel.classList.add("success");
+      const targetEl = safeQueryAll(res.rule.selector.primary)[0];
+      if (targetEl) {
+        const tr = targetEl.getBoundingClientRect();
+        spawnSparklePuff(tr.left + tr.width / 2, tr.top + tr.height / 2, 8, 60);
+      }
+      setTimeout(() => closePanel(), 480);
     } catch (e) {
+      panel.classList.remove("thinking");
       errEl.textContent = e.message;
       errEl.style.display = "block";
       statusEl.textContent = "";

@@ -17,8 +17,17 @@
       .rule-type { display: inline-block; font-size: 10px; padding: 1px 5px; border-radius: 3px; background: #eef; color: #335; margin-right: 4px; text-transform: uppercase; }
       .rule-sel { font-family: ui-monospace, monospace; font-size: 11px; color: #444; word-break: break-all; }
       .rule-broken { background: #fee; }
-      .empty { color: #999; font-size: 12px; padding: 10px 0; text-align: center; }
+      .empty { color: #94a3b8; font-size: 12px; padding: 18px 0 12px; text-align: center; line-height: 1.5; }
+      .empty-icon { font-size: 28px; margin-bottom: 6px; animation: empty-wiggle 2.4s ease-in-out infinite alternate; }
+      .empty-hint { font-size: 11px; color: #cbd5e1; margin-top: 4px; }
+      .empty-hint em { color: #2563eb; font-style: normal; font-weight: 600; }
+      @keyframes empty-wiggle { from { transform: rotate(-12deg); } to { transform: rotate(12deg); } }
       .icon-btn { padding: 2px 6px; font-size: 11px; }
+      li { transition: opacity 0.18s, transform 0.22s, max-height 0.22s, padding 0.22s, margin 0.22s; max-height: 80px; overflow: hidden; }
+      li.rule-leaving { opacity: 0; transform: translateX(40px); max-height: 0; padding-top: 0; padding-bottom: 0; margin-bottom: 0; border-color: transparent; }
+      @media (prefers-reduced-motion: reduce) {
+        .empty-icon, li, li.rule-leaving { animation: none !important; transition: none !important; }
+      }
     </style>
   </head>
   <body>

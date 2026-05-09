@@ -29,7 +29,7 @@ async function render() {
   if (!rules.length) {
     const empty = document.createElement("div");
     empty.className = "empty";
-    empty.textContent = "No rules yet for this site.";
+    empty.innerHTML = `<div class="empty-icon">🧹</div><div>Nothing swept yet.</div><div class="empty-hint">Click <em>Edit this page</em> or use the floating broom.</div>`;
     rulesEl.appendChild(empty);
     return;
   }
@@ -64,6 +64,8 @@ function renderRule(r, hostname, tabId) {
   del.textContent = "✕";
   del.title = "Delete rule";
   del.addEventListener("click", async () => {
+    li.classList.add("rule-leaving");
+    await new Promise((r) => setTimeout(r, 220));
     await deleteRule(hostname, r.id);
     if (tabId) chrome.tabs.sendMessage(tabId, { type: "CONTENT_REMOVE_RULE", ruleId: r.id }).catch(() => {});
     render();
