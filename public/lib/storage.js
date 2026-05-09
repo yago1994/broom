@@ -1,21 +1,17 @@
-import type { Rule, Settings } from "./types";
-
-const RULES_KEY = "rules"; // { [hostname]: Rule[] }
+const RULES_KEY = "rules";
 const SETTINGS_KEY = "settings";
 
-type RulesMap = Record<string, Rule[]>;
-
-export async function getRulesMap(): Promise<RulesMap> {
+export async function getRulesMap() {
   const r = await chrome.storage.local.get(RULES_KEY);
-  return (r[RULES_KEY] as RulesMap) ?? {};
+  return r[RULES_KEY] ?? {};
 }
 
-export async function getRulesForHost(hostname: string): Promise<Rule[]> {
+export async function getRulesForHost(hostname) {
   const map = await getRulesMap();
   return map[hostname] ?? [];
 }
 
-export async function upsertRule(rule: Rule): Promise<void> {
+export async function upsertRule(rule) {
   const map = await getRulesMap();
   const list = map[rule.hostname] ?? [];
   const idx = list.findIndex((r) => r.id === rule.id);
@@ -25,26 +21,26 @@ export async function upsertRule(rule: Rule): Promise<void> {
   await chrome.storage.local.set({ [RULES_KEY]: map });
 }
 
-export async function deleteRule(hostname: string, ruleId: string): Promise<void> {
+export async function deleteRule(hostname, ruleId) {
   const map = await getRulesMap();
   const list = map[hostname] ?? [];
   map[hostname] = list.filter((r) => r.id !== ruleId);
   await chrome.storage.local.set({ [RULES_KEY]: map });
 }
 
-export async function setRuleEnabled(hostname: string, ruleId: string, enabled: boolean): Promise<void> {
+export async function setRuleEnabled(hostname, ruleId, enabled) {
   const map = await getRulesMap();
   const list = map[hostname] ?? [];
-  const r = list.find((x) => x.id === ruleId);
-  if (r) {
-    r.enabled = enabled;
+  const rule = list.find((r) => r.id === ruleId);
+  if (rule) {
+    rule.enabled = enabled;
     await chrome.storage.local.set({ [RULES_KEY]: map });
   }
 }
 
-export async function getSettings(): Promise<Settings> {
+export async function getSettings() {
   const r = await chrome.storage.local.get(SETTINGS_KEY);
-  const s = r[SETTINGS_KEY] as Partial<Settings> | undefined;
+  const s = r[SETTINGS_KEY];
   return {
     provider: "anthropic",
     model: s?.model || "claude-sonnet-4-6",
@@ -52,16 +48,16 @@ export async function getSettings(): Promise<Settings> {
   };
 }
 
-export async function setSettings(s: Settings): Promise<void> {
+export async function setSettings(s) {
   await chrome.storage.local.set({ [SETTINGS_KEY]: s });
 }
 
-export async function exportAll(): Promise<string> {
+export async function exportAll() {
   const map = await getRulesMap();
   return JSON.stringify(map, null, 2);
 }
 
-export async function importAll(json: string): Promise<void> {
-  const parsed = JSON.parse(json) as RulesMap;
+export async function importAll(json) {
+  const parsed = JSON.parse(json);
   await chrome.storage.local.set({ [RULES_KEY]: parsed });
 }

@@ -1,72 +1,61 @@
 # Broom
 
-Chrome extension (MV3). Point at any element, describe what you want changed, and the modification persists per-hostname.
+Safari/Chrome extension (MV3). Point at any element, describe what you want changed, and it sticks per-hostname.
+
+No build step — the `public/` directory is the extension, ready to load directly.
 
 ## Status: v1 prototype
 
-Implemented:
 - Picker mode (overlay, hover highlight, click capture)
-- `hide` rules without LLM (selector from local finder)
-- `restyle` and `inject` rules via LLM (Anthropic Messages API)
-- Replay at `document_start` with synchronous CSS injection (no FOUC)
-- `MutationObserver` + `pushState`/`popstate` hook for SPAs
+- `hide` rules — no LLM, instant
+- `restyle` and `inject` rules via Anthropic Claude
+- CSS injected at `document_start` (no FOUC for hide/restyle)
+- MutationObserver + `pushState`/`popstate` for SPAs
 - Popup: per-hostname rule list, toggle/delete
-- Options: API key, model, export/import
+- Options: API key, model, export/import rules
 
-Not yet:
-- `replace` rules (component catalog renderer)
-- Healing flow (selector re-resolution after repeated failures)
-- Cross-frame, Shadow DOM
-- Safari packaging
+Not yet: `replace` component catalog, healing flow, cross-frame/Shadow DOM.
 
-## Build
+## Safari — build in Xcode
+
+Targets Safari 16.4+ (MV3 service worker support).
 
 ```sh
-npm install
-npm run build      # outputs dist/
-npm run watch      # dev mode
-npm run typecheck
+xcrun safari-web-extension-converter public \
+  --project-location ./safari \
+  --app-name Broom \
+  --bundle-identifier com.yourname.broom \
+  --mac-only
 ```
 
-## Load in Chrome
+Open `safari/Broom/Broom.xcodeproj` in Xcode:
+1. Select the **Broom (macOS)** scheme → press **▶ Run**
+2. A host app window opens — this is expected
+3. Go to **Safari → Settings → Extensions**, enable **Broom**, set access to **All Websites**
+4. Open the extension's **Options** page and paste your Anthropic API key
 
-1. `npm run build`
-2. `chrome://extensions` → Developer mode → Load unpacked → pick `dist/`
-3. Open the extension's Options page, paste your Anthropic API key.
-4. Visit any site, click the toolbar icon, hit "Edit this page", click an element.
+After code changes: edit files in `public/`, then ⌘R in Xcode (the converter symlinks `public/` — no re-conversion needed).
 
-## Safari (build via Xcode)
+## Chrome
 
-Targets Safari 16.4+ (MV3 service worker support). The `dist/` output is the unpacked extension; convert it to an Xcode project:
-
-```sh
-npm run build
-xcrun safari-web-extension-converter dist --project-location ./safari --app-name Broom --bundle-identifier com.yourname.broom
-```
-
-Open the generated Xcode project, build/run the host app, then enable the extension in **Safari → Settings → Extensions**. Grant access to "All Websites" (or per-site) since the extension uses `<all_urls>`.
-
-Notes:
-- Background script is IIFE (not ESM) so it loads on Safari without `"type": "module"`.
-- LLM calls go from the background service worker to `api.anthropic.com` with the `anthropic-dangerous-direct-browser-access: true` header. Required because the request originates from a browser-extension origin.
-- After changes, re-run `npm run build` and Xcode rebuild — the converter symlinks `dist/`, so most rebuilds don't need re-conversion.
+`chrome://extensions` → Developer mode → Load unpacked → pick `public/`
 
 ## Architecture
 
-Three layers, strict separation:
+Three layers, no build:
 
-- `src/content/` — runs at `document_start`. Owns DOM. Picker, applier, replay loop. No network, no API key.
-- `src/background/` — service worker. Holds API key. Makes LLM calls. Validates and persists rules.
-- `src/lib/storage.ts` — `chrome.storage.local`, keyed by hostname.
+| File | Runs in | Notes |
+|---|---|---|
+| `public/content.js` | Page context (classic script) | Picker, applier, replay, SPA hooks. No network, no API key. Self-contained — no imports. |
+| `public/background.js` | Service worker (ES module) | Holds API key. Makes LLM calls. Imports `lib/`. |
+| `public/popup.js` | Extension popup (ES module) | Rule list, toggle, delete. |
+| `public/options.js` | Options page (ES module) | API key, export/import. |
+| `public/lib/storage.js` | Shared | `chrome.storage.local` helpers, keyed by hostname. |
 
-Messages flow: popup → content (start picker), content → background (generate rule), background → storage → content (apply).
-
-## Rule shape
-
-See `src/lib/types.ts`. CSS-based rules (`hide`, `restyle`) consolidate into one `<style>` tag re-built on every change. DOM-mutation rules (`inject`) re-run when the `MutationObserver` fires.
+Messages: popup → content (`CONTENT_START_PICKER`), content → background (`BG_GENERATE_RULE`), background persists and returns the rule.
 
 ## Notes
 
-- `inject.html` is rendered as **plain text** in v1. Arbitrary HTML injection from an LLM is unsafe; the architecture spec calls for schema-based `replace` rules for richer content — that's the next milestone.
-- The Anthropic call uses `anthropic-dangerous-direct-browser-access: true` because the worker is browser-side. Treat it as such; the key sits in `chrome.storage.local`.
-- Selector validation: after the LLM returns a selector, the picker verifies it matches at least one element on the current page before persisting. Stricter "matches exactly the picked element" check is a TODO.
+- Background uses `anthropic-dangerous-direct-browser-access: true` — required for any browser-extension origin hitting the Anthropic API directly.
+- `inject` payload is rendered as **plain text** for safety. Arbitrary HTML from an LLM is unsafe; schema-based `replace` rules (next milestone) handle richer content.
+- Content script is a single self-contained classic script because MV3 content scripts don't support ES module imports.
