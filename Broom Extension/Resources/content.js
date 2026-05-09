@@ -950,12 +950,17 @@ function onOver(e) {
 function onClick(e) {
   if (activeMode !== "broom" || isOurUI(e.target)) return;
   e.preventDefault(); e.stopPropagation();
-  pickerTarget = e.target;
   const target = e.target;
-  spawnSparklePuff(e.clientX, e.clientY, 6, 50);
   const selector = buildSelector(target);
-  stopPicker();
-  void playSweepAndHide(target, selector);
+  spawnSparklePuff(e.clientX, e.clientY, 6, 50);
+  // Stay in brooming mode so multiple elements can be wiped in a row.
+  // Clear the current target/visuals; mouseover will repopulate after the sweep.
+  pickerTarget = null;
+  document.getElementById(HIGHLIGHT_ID)?.style.setProperty("opacity", "0");
+  hideSelectorTag();
+  void playSweepAndHide(target, selector).then(() => {
+    document.getElementById(HIGHLIGHT_ID)?.style.removeProperty("opacity");
+  });
 }
 
 // Global keydown — always active. Esc exits brooming/closes panel.
