@@ -630,9 +630,9 @@ function onClick(e) {
   pickerTarget = e.target;
   const target = e.target;
   spawnSparklePuff(e.clientX, e.clientY, 6, 50);
+  const selector = buildSelector(target);
   stopPicker();
-  // Brief pop before opening the panel — acknowledges the click
-  popTargetThen(target, () => openPanel(target));
+  void playSweepAndHide(target, selector);
 }
 
 // Global keydown — always active. Esc exits brooming/closes panel.
@@ -768,7 +768,6 @@ async function playSweepAndHide(el, selector) {
     const cx = rect.left + rect.width * 0.2;
     const cy = rect.top + rect.height / 2;
     spawnSparklePuff(cx, cy, 10, Math.max(60, rect.width * 0.4));
-    screenShake();
   }, 760);
 
   await new Promise((r) => setTimeout(r, 950));
