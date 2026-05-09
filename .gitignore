@@ -4,3 +4,8 @@ safari/
 *.log
 .DS_Store
 .claude/
+
+# Xcode
+xcuserdata/
+*.xcuserstate
+*.xcuserdatad/
