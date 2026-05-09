@@ -259,6 +259,7 @@ function startMode(mode) {
   const launcher = document.getElementById(LAUNCHER_ID);
   launcher?.classList.add("active");
   launcher?.setAttribute("data-mode", mode);
+  if (launcher) launcher.textContent = mode === "plant" ? "🌱" : "🧹";
 
   if (mode === "broom") {
     document.documentElement.classList.add("broom-picking");
@@ -280,6 +281,7 @@ function stopMode() {
   const launcher = document.getElementById(LAUNCHER_ID);
   launcher?.classList.remove("active");
   launcher?.removeAttribute("data-mode");
+  if (launcher) launcher.textContent = "🧹";
   document.getElementById(HIGHLIGHT_ID)?.remove();
   hideSelectorTag();
   document.removeEventListener("mouseover", onOver, true);
