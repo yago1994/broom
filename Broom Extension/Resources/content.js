@@ -736,7 +736,7 @@ function pickerStylesheet(cursorValue) {
       vertical-align: top !important;
       pointer-events: none !important;
       line-height: 1 !important;
-      contain: layout style paint !important;
+      overflow: visible !important;
     }
     .broom-plant {
       position: relative !important;
@@ -764,9 +764,9 @@ function pickerStylesheet(cursorValue) {
     }
     .broom-plant-pot svg { display: block; width: 100%; height: 100%; }
     .broom-plant-pot-none .broom-plant-pot { display: none !important; }
-    .broom-plant-sm { width: 80px !important; height: 100px !important; }
-    .broom-plant-md { width: 130px !important; height: 160px !important; }
-    .broom-plant-lg { width: 190px !important; height: 240px !important; }
+    .broom-plant-sm { width: 60px !important; height: 72px !important; }
+    .broom-plant-md { width: 96px !important; height: 120px !important; }
+    .broom-plant-lg { width: 140px !important; height: 176px !important; }
     .broom-plant-anim-gentle-sway {
       animation: broom-plant-sway 5.5s ease-in-out infinite !important;
     }
@@ -1280,15 +1280,27 @@ function safeQueryAll(sel) { try { return Array.from(document.querySelectorAll(s
 const EMPTY_SLOT_ATTR = "data-broom-slot-for";
 
 function renderEmptySlotAffordances() {
-  removeEmptySlotAffordances();
   const plantedSourceIds = new Set(
     appliedRules
       .filter((r) => r.payload && r.payload.kind === "plant")
       .map((r) => r.payload.sourceRuleId)
   );
+  const hideRuleIds = new Set(
+    appliedRules.filter((r) => r.payload && r.payload.kind === "hide").map((r) => r.id)
+  );
+
+  // Remove slots that got planted or whose hide rule no longer exists
+  document.querySelectorAll(`[${EMPTY_SLOT_ATTR}]`).forEach((el) => {
+    const id = el.getAttribute(EMPTY_SLOT_ATTR);
+    if (plantedSourceIds.has(id) || !hideRuleIds.has(id)) el.remove();
+  });
+
+  // Add slots that are missing — never touch ones already in the DOM
   for (const rule of appliedRules) {
     if (!rule.payload || rule.payload.kind !== "hide") continue;
     if (plantedSourceIds.has(rule.id)) continue;
+    const escId = rule.id.replace(/"/g, '\\"');
+    if (document.querySelector(`[${EMPTY_SLOT_ATTR}="${escId}"]`)) continue;
     const anchor = resolveSelector(rule.selector.primary, rule.selector.fallbacks);
     if (!anchor) continue;
     const slot = createEmptySlot(rule);
