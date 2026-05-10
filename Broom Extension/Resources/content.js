@@ -373,7 +373,10 @@ const HIGHLIGHT_ID = "broom-picker-highlight";
 const PANEL_ID = "broom-panel";
 const LAUNCHER_ID = "broom-launcher";
 const SWEEP_ID = "broom-sweep";
-const OUR_UI_SELECTOR = `#${PANEL_ID},#${HIGHLIGHT_ID},#${LAUNCHER_ID},[id^="${SWEEP_ID}"]`;
+const UNDO_TOAST_ID = "broom-undo-toast";
+const OUR_UI_SELECTOR = `#${PANEL_ID},#${HIGHLIGHT_ID},#${LAUNCHER_ID},#${UNDO_TOAST_ID},[id^="${SWEEP_ID}"]`;
+
+let undoToastTimer = null;
 
 let activeMode = null; // "broom" | "plant" | "restore" | null
 let pickerTarget = null;
@@ -1079,6 +1082,47 @@ function pickerStylesheet(cursorValue) {
       100% { opacity: 0; transform: translateY(8px) scale(0.96); }
     }
 
+    /* ── Undo toast ──────────────────────────── */
+    #${UNDO_TOAST_ID} {
+      all: initial !important;
+      position: fixed !important;
+      bottom: 22px !important;
+      left: 22px !important;
+      z-index: 2147483647 !important;
+      display: inline-flex !important;
+      align-items: center !important;
+      gap: 10px !important;
+      padding: 10px 14px 10px 12px !important;
+      border-radius: 14px !important;
+      background: rgba(15,23,42,0.92) !important;
+      color: #f1f5f9 !important;
+      border: 1px solid rgba(125,151,255,0.4) !important;
+      border-left: 4px solid #7d97ff !important;
+      box-shadow: 0 16px 40px rgba(15,23,42,0.32), 0 2px 8px rgba(15,23,42,0.18) !important;
+      font: 600 13px/1.2 -apple-system, system-ui, sans-serif !important;
+      backdrop-filter: blur(14px) saturate(1.3) !important;
+      -webkit-backdrop-filter: blur(14px) saturate(1.3) !important;
+      animation: broom-toast-in 0.32s cubic-bezier(.34,1.56,.64,1) !important;
+    }
+    #${UNDO_TOAST_ID}.but-leaving {
+      animation: broom-toast-out 0.22s ease-in forwards !important;
+    }
+    #${UNDO_TOAST_ID} .but-icon { font-size: 16px !important; }
+    #${UNDO_TOAST_ID} .but-msg { flex: 1 1 auto !important; color: #f8fafc !important; }
+    #${UNDO_TOAST_ID} .but-btn {
+      all: unset;
+      cursor: pointer;
+      padding: 5px 10px;
+      border-radius: 8px;
+      font: 600 12px/1 -apple-system, system-ui, sans-serif;
+      color: #dbe5ff;
+      background: rgba(125,151,255,0.18);
+      border: 1px solid rgba(125,151,255,0.4);
+      transition: background 0.12s, transform 0.1s;
+    }
+    #${UNDO_TOAST_ID} .but-btn:hover { background: rgba(125,151,255,0.32); }
+    #${UNDO_TOAST_ID} .but-btn:active { transform: scale(0.96); }
+
     /* ── Restore-mode overlay ────────────────── */
     .broom-restore-overlay {
       position: fixed !important;
@@ -1137,6 +1181,7 @@ function pickerStylesheet(cursorValue) {
       .broom-empty-slot, .broom-empty-slot-label, .broom-empty-slot-soil,
       .broom-plant, .broom-plant-enter, .broom-plant-anim-gentle-sway,
       .broom-restore-overlay, .broom-restore-overlay.broom-restore-leaving, .broom-restore-plus,
+      #${UNDO_TOAST_ID}, #${UNDO_TOAST_ID}.but-leaving,
       #${PLANT_TOAST_ID}, #${PLANT_TOAST_ID}.bpt-leaving {
         animation: none !important;
         transition: none !important;
@@ -1464,6 +1509,8 @@ async function playSweepAndHide(el, selector) {
   const rule = makeHideRule(selector, { width: rect.width, height: rect.height });
   await upsertRuleLocal(rule);
   applyRule(rule);
+
+  showUndoToast(rule, { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 });
 
   // Cleanup overlay; restore element styles in case the rule was rejected.
   overlay.remove();
@@ -1824,6 +1871,50 @@ function makePlantRule(hideRule, plant) {
     lastFailedAt: null,
     failCount: 0
   };
+}
+
+// ── Undo toast (revive the just-swept element) ──────────────────────────────
+
+function showUndoToast(rule, position) {
+  hideUndoToast();
+  const toast = document.createElement("div");
+  toast.id = UNDO_TOAST_ID;
+  toast.innerHTML = `
+    <span class="but-icon">🧹</span>
+    <span class="but-msg">Swept</span>
+    <button class="but-btn" data-act="undo" type="button">Undo</button>
+  `;
+  document.documentElement.appendChild(toast);
+
+  toast.querySelector('[data-act="undo"]').addEventListener("click", async (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    appliedRules = appliedRules.filter((r) => r.id !== rule.id);
+    styleCache.delete(rule.id);
+    rebuildStyleTag();
+    document.querySelectorAll(`.broom-restore-overlay[${RESTORE_OVERLAY_ATTR}="${rule.id.replace(/"/g, '\\"')}"]`).forEach((n) => n.remove());
+    if (position) spawnSparklePuff(position.x, position.y, 8, 60);
+    hideUndoToast();
+    try { await deleteRuleLocal(rule.hostname, rule.id); } catch { /* best-effort */ }
+  });
+
+  toast.addEventListener("mouseenter", () => clearTimeout(undoToastTimer));
+  toast.addEventListener("mouseleave", armUndoToastDismiss);
+  armUndoToastDismiss();
+}
+
+function armUndoToastDismiss() {
+  clearTimeout(undoToastTimer);
+  undoToastTimer = setTimeout(hideUndoToast, 6000);
+}
+
+function hideUndoToast() {
+  clearTimeout(undoToastTimer);
+  undoToastTimer = null;
+  const toast = document.getElementById(UNDO_TOAST_ID);
+  if (!toast) return;
+  toast.classList.add("but-leaving");
+  setTimeout(() => toast.remove(), 220);
 }
 
 const PLANT_TOAST_ID = "broom-plant-toast";
