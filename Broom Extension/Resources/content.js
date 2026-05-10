@@ -40,6 +40,32 @@ async function deleteRuleLocal(hostname, ruleId) {
   await chrome.storage.local.set({ [RULES_KEY]: map });
 }
 
+async function clearRulesForHost(hostname) {
+  const r = await chrome.storage.local.get(RULES_KEY);
+  const map = r[RULES_KEY] ?? {};
+  delete map[hostname];
+  await chrome.storage.local.set({ [RULES_KEY]: map });
+}
+
+// ── Prefs (sound on/off, etc.) ───────────────────────────────────────────────
+
+const PREFS_KEY = "prefs";
+const DEFAULT_PREFS = { soundEnabled: true };
+let cachedPrefs = { ...DEFAULT_PREFS };
+
+async function loadPrefs() {
+  try {
+    const r = await chrome.storage.local.get(PREFS_KEY);
+    cachedPrefs = { ...DEFAULT_PREFS, ...(r[PREFS_KEY] || {}) };
+  } catch { cachedPrefs = { ...DEFAULT_PREFS }; }
+  return cachedPrefs;
+}
+
+async function setPref(key, value) {
+  cachedPrefs = { ...cachedPrefs, [key]: value };
+  await chrome.storage.local.set({ [PREFS_KEY]: cachedPrefs });
+}
+
 // ── Plant catalog (trusted inline SVGs) ──────────────────────────────────────
 
 const POT_SVGS = {
@@ -373,7 +399,8 @@ const HIGHLIGHT_ID = "broom-picker-highlight";
 const PANEL_ID = "broom-panel";
 const LAUNCHER_ID = "broom-launcher";
 const SWEEP_ID = "broom-sweep";
-const OUR_UI_SELECTOR = `#${PANEL_ID},#${HIGHLIGHT_ID},#${LAUNCHER_ID},[id^="${SWEEP_ID}"]`;
+const SETTINGS_ID = "broom-settings";
+const OUR_UI_SELECTOR = `#${PANEL_ID},#${HIGHLIGHT_ID},#${LAUNCHER_ID},#${SETTINGS_ID},[id^="${SWEEP_ID}"]`;
 
 let activeMode = null; // "broom" | "plant" | null
 let pickerTarget = null;
@@ -687,8 +714,9 @@ function pickerStylesheet(cursorValue) {
       transform: translateX(0) translateY(0) scale(1) !important;
       pointer-events: auto !important;
     }
-    #${LAUNCHER_WRAP_ID}.broom-fan-open .broom-fan-chip:nth-child(1) { transition-delay: 60ms; }
-    #${LAUNCHER_WRAP_ID}.broom-fan-open .broom-fan-chip:nth-child(2) { transition-delay: 0ms; }
+    #${LAUNCHER_WRAP_ID}.broom-fan-open .broom-fan-chip:nth-child(1) { transition-delay: 120ms; }
+    #${LAUNCHER_WRAP_ID}.broom-fan-open .broom-fan-chip:nth-child(2) { transition-delay: 60ms; }
+    #${LAUNCHER_WRAP_ID}.broom-fan-open .broom-fan-chip:nth-child(3) { transition-delay: 0ms; }
     #${LAUNCHER_WRAP_ID} .broom-fan-chip[data-mode="plant"]:hover {
       background: linear-gradient(135deg, rgba(108,197,81,0.18), rgba(56,161,105,0.18)) !important;
       border-color: rgba(56,161,105,0.5) !important;
@@ -697,6 +725,117 @@ function pickerStylesheet(cursorValue) {
       background: linear-gradient(135deg, rgba(124,58,237,0.14), rgba(37,99,235,0.14)) !important;
       border-color: rgba(37,99,235,0.5) !important;
     }
+    #${LAUNCHER_WRAP_ID} .broom-fan-chip[data-action="settings"]:hover {
+      background: linear-gradient(135deg, rgba(100,116,139,0.16), rgba(71,85,105,0.16)) !important;
+      border-color: rgba(100,116,139,0.5) !important;
+    }
+
+    /* ── Settings popover ────────────────────── */
+    #${SETTINGS_ID} {
+      all: initial !important;
+      position: fixed !important;
+      right: 22px !important;
+      bottom: 96px !important;
+      z-index: 2147483647 !important;
+      width: 280px !important;
+      padding: 14px !important;
+      border-radius: 16px !important;
+      background: rgba(255,255,255,0.98) !important;
+      border: 1px solid rgba(148,163,184,0.28) !important;
+      box-shadow: 0 16px 40px rgba(15,23,42,0.18), 0 2px 8px rgba(15,23,42,0.08) !important;
+      backdrop-filter: blur(14px) saturate(1.3) !important;
+      -webkit-backdrop-filter: blur(14px) saturate(1.3) !important;
+      font: 500 13px/1.35 -apple-system, system-ui, sans-serif !important;
+      color: #1f2937 !important;
+      animation: bsweep-settings-in 0.22s cubic-bezier(.34,1.56,.64,1) !important;
+    }
+    #${SETTINGS_ID}.bs-leaving { animation: bsweep-settings-out 0.16s ease-in forwards !important; }
+    @keyframes bsweep-settings-in {
+      0%   { opacity: 0; transform: translateY(8px) scale(0.94); }
+      100% { opacity: 1; transform: translateY(0) scale(1); }
+    }
+    @keyframes bsweep-settings-out {
+      to { opacity: 0; transform: translateY(6px) scale(0.96); }
+    }
+    #${SETTINGS_ID} .bs-title {
+      font: 700 12px/1 -apple-system, system-ui, sans-serif !important;
+      letter-spacing: 0.04em !important;
+      text-transform: uppercase !important;
+      color: #64748b !important;
+      margin: 0 0 10px 2px !important;
+    }
+    #${SETTINGS_ID} .bs-row {
+      display: flex !important;
+      align-items: center !important;
+      justify-content: space-between !important;
+      gap: 10px !important;
+      padding: 8px 4px !important;
+    }
+    #${SETTINGS_ID} .bs-row-label {
+      flex: 1 1 auto !important;
+      color: #1f2937 !important;
+      font-weight: 600 !important;
+    }
+    #${SETTINGS_ID} .bs-row-hint {
+      display: block !important;
+      font-weight: 400 !important;
+      color: #64748b !important;
+      font-size: 11px !important;
+      margin-top: 2px !important;
+    }
+    #${SETTINGS_ID} .bs-switch {
+      position: relative !important;
+      width: 38px !important;
+      height: 22px !important;
+      flex: 0 0 auto !important;
+    }
+    #${SETTINGS_ID} .bs-switch input { all: unset !important; position: absolute !important; opacity: 0 !important; inset: 0 !important; cursor: pointer !important; }
+    #${SETTINGS_ID} .bs-switch-track {
+      position: absolute !important;
+      inset: 0 !important;
+      background: rgba(148,163,184,0.4) !important;
+      border-radius: 999px !important;
+      transition: background 0.18s ease !important;
+      cursor: pointer !important;
+    }
+    #${SETTINGS_ID} .bs-switch-track::after {
+      content: "" !important;
+      position: absolute !important;
+      top: 2px !important;
+      left: 2px !important;
+      width: 18px !important;
+      height: 18px !important;
+      border-radius: 50% !important;
+      background: #fff !important;
+      box-shadow: 0 1px 3px rgba(15,23,42,0.2) !important;
+      transition: transform 0.18s cubic-bezier(.34,1.56,.64,1) !important;
+    }
+    #${SETTINGS_ID} .bs-switch input:checked ~ .bs-switch-track {
+      background: linear-gradient(135deg, #2563eb, #7c3aed) !important;
+    }
+    #${SETTINGS_ID} .bs-switch input:checked ~ .bs-switch-track::after {
+      transform: translateX(16px) !important;
+    }
+    #${SETTINGS_ID} .bs-divider { height: 1px !important; background: rgba(148,163,184,0.22) !important; margin: 8px 0 !important; }
+    #${SETTINGS_ID} .bs-btn {
+      all: unset !important;
+      display: flex !important;
+      align-items: center !important;
+      gap: 8px !important;
+      width: 100% !important;
+      box-sizing: border-box !important;
+      padding: 9px 10px !important;
+      border-radius: 10px !important;
+      cursor: pointer !important;
+      font: 600 13px/1 -apple-system, system-ui, sans-serif !important;
+      color: #1f2937 !important;
+      transition: background 0.12s, transform 0.1s !important;
+    }
+    #${SETTINGS_ID} .bs-btn:hover { background: rgba(99,102,241,0.10) !important; }
+    #${SETTINGS_ID} .bs-btn:active { transform: scale(0.98) !important; }
+    #${SETTINGS_ID} .bs-btn-glyph { font-size: 15px !important; }
+    #${SETTINGS_ID} .bs-btn[data-act="reset"] { color: #b91c1c !important; }
+    #${SETTINGS_ID} .bs-btn[data-act="reset"]:hover { background: rgba(220,38,38,0.10) !important; }
     @keyframes bsweep-launcher-enter {
       0%   { transform: translateY(-140px) rotate(-25deg) scale(0.6); opacity: 0; }
       55%  { transform: translateY(8px)    rotate(8deg)   scale(1.08); opacity: 1; }
@@ -1101,15 +1240,12 @@ const SPARKLE_GLYPHS = ["✨", "✦", "✧", "⭐", "💫"];
 
 // Spawn a small burst of sparkles at viewport coords (for clicks/successes).
 function playBroomSound() {
+  if (cachedPrefs.soundEnabled === false) return;
   try {
-    const url = chrome.runtime.getURL("magic-swoosh.mp3");
-    console.log("[broom] playing sound:", url);
-    const audio = new Audio(url);
+    const audio = new Audio(chrome.runtime.getURL("magic-swoosh.mp3"));
     audio.volume = 0.6;
-    audio.play().catch(e => console.error("[broom] audio play failed:", e));
-  } catch (e) {
-    console.error("[broom] playBroomSound error:", e);
-  }
+    audio.play().catch(() => {});
+  } catch (_) {}
 }
 
 function spawnSparklePuff(x, y, count = 6, spread = 60) {
@@ -1246,6 +1382,10 @@ function installLauncher() {
   const fan = document.createElement("div");
   fan.className = "broom-fan";
   fan.innerHTML = `
+    <button class="broom-fan-chip" data-action="settings" type="button" aria-label="Settings">
+      <span class="broom-fan-glyph">⚙️</span>
+      <span class="broom-fan-label">Settings</span>
+    </button>
     <button class="broom-fan-chip" data-mode="plant" type="button" aria-label="Plant mode">
       <span class="broom-fan-glyph">🌱</span>
       <span class="broom-fan-label">Plant</span>
@@ -1303,16 +1443,127 @@ function installLauncher() {
     chip.addEventListener("click", (e) => {
       e.preventDefault();
       e.stopPropagation();
-      const mode = chip.dataset.mode;
       const r = chip.getBoundingClientRect();
       spawnSparklePuff(r.left + r.width / 2, r.top + r.height / 2, 6, 50);
       wrap.classList.remove("broom-fan-open");
+      if (chip.dataset.action === "settings") {
+        toggleSettingsPopover();
+        return;
+      }
+      const mode = chip.dataset.mode;
       if (activeMode === mode) stopMode();
       else startMode(mode);
     }, true);
   });
 
   document.documentElement.appendChild(wrap);
+}
+
+// ── Settings popover ──────────────────────────────────────────────────────────
+
+function toggleSettingsPopover() {
+  const existing = document.getElementById(SETTINGS_ID);
+  if (existing) { closeSettingsPopover(); return; }
+  openSettingsPopover();
+}
+
+function openSettingsPopover() {
+  ensurePickerStyles();
+  if (activeMode) stopMode();
+
+  const pop = document.createElement("div");
+  pop.id = SETTINGS_ID;
+  pop.setAttribute("role", "dialog");
+  pop.setAttribute("aria-label", "Broom settings");
+  pop.innerHTML = `
+    <div class="bs-title">Broom settings</div>
+    <label class="bs-row">
+      <span class="bs-row-label">
+        Sound effects
+        <span class="bs-row-hint">Play a swoosh on each sweep.</span>
+      </span>
+      <span class="bs-switch">
+        <input type="checkbox" data-pref="soundEnabled" ${cachedPrefs.soundEnabled === false ? "" : "checked"} />
+        <span class="bs-switch-track"></span>
+      </span>
+    </label>
+    <div class="bs-divider"></div>
+    <button class="bs-btn" data-act="rules" type="button">
+      <span class="bs-btn-glyph">📋</span><span>Manage rules for this site</span>
+    </button>
+    <button class="bs-btn" data-act="onboarding" type="button">
+      <span class="bs-btn-glyph">🪟</span><span>Open onboarding window</span>
+    </button>
+    <div class="bs-divider"></div>
+    <button class="bs-btn" data-act="reset" type="button">
+      <span class="bs-btn-glyph">🗑️</span><span>Clear all rules for this host</span>
+    </button>
+  `;
+  document.documentElement.appendChild(pop);
+
+  pop.addEventListener("click", (e) => e.stopPropagation(), true);
+
+  pop.querySelector('input[data-pref="soundEnabled"]').addEventListener("change", async (e) => {
+    const enabled = !!e.currentTarget.checked;
+    await setPref("soundEnabled", enabled);
+    if (enabled) playBroomSound();
+  });
+
+  pop.querySelector('[data-act="rules"]').addEventListener("click", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const url = chrome.runtime.getURL("popup.html");
+    window.open(url, "_blank", "noopener,noreferrer");
+  });
+
+  pop.querySelector('[data-act="onboarding"]').addEventListener("click", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    chrome.runtime.sendMessage({ type: "OPEN_ONBOARDING_APP" }, (response) => {
+      if (chrome.runtime.lastError || (response && response.ok === false)) {
+        console.error("[broom] open onboarding failed:", chrome.runtime.lastError?.message || response?.error);
+      }
+    });
+    closeSettingsPopover();
+  });
+
+  pop.querySelector('[data-act="reset"]').addEventListener("click", async (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const host = location.hostname;
+    if (!confirm(`Clear all Broom rules for ${host}? This cannot be undone.`)) return;
+    await clearRulesForHost(host);
+    for (const r of [...appliedRules]) removeRule(r.id);
+    appliedRules = [];
+    closeSettingsPopover();
+  });
+
+  // Click outside to dismiss
+  setTimeout(() => {
+    document.addEventListener("click", onSettingsOutsideClick, true);
+    document.addEventListener("keydown", onSettingsKeydown, true);
+  }, 0);
+}
+
+function onSettingsOutsideClick(e) {
+  const pop = document.getElementById(SETTINGS_ID);
+  if (!pop) { document.removeEventListener("click", onSettingsOutsideClick, true); return; }
+  if (pop.contains(e.target)) return;
+  if (e.target.closest && e.target.closest(`#${LAUNCHER_WRAP_ID}`)) return;
+  closeSettingsPopover();
+}
+
+function onSettingsKeydown(e) {
+  if (e.key === "Escape") closeSettingsPopover();
+}
+
+function closeSettingsPopover() {
+  document.removeEventListener("click", onSettingsOutsideClick, true);
+  document.removeEventListener("keydown", onSettingsKeydown, true);
+  const pop = document.getElementById(SETTINGS_ID);
+  if (!pop) return;
+  pop.classList.add("bs-leaving");
+  setTimeout(() => pop.remove(), 160);
 }
 
 // ── Sweep animation — broom passes over the element, sparkles fly out ─────────
@@ -1724,6 +1975,7 @@ let appliedRules = [];
 let lastUrl = location.href;
 
 async function init() {
+  await loadPrefs();
   appliedRules = await getRulesForHost(location.hostname);
   for (const r of appliedRules) applyRule(r);
 
@@ -1779,6 +2031,9 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
 
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area === "local" && changes[RULES_KEY]) void refreshRules();
+  if (area === "local" && changes[PREFS_KEY]) {
+    cachedPrefs = { ...DEFAULT_PREFS, ...(changes[PREFS_KEY].newValue || {}) };
+  }
 });
 
 // ── Utils ─────────────────────────────────────────────────────────────────────

@@ -165,6 +165,8 @@ async function generateRule(msg, settings) {
 
 // ── Message handler ───────────────────────────────────────────────────────────
 
+const NATIVE_APP_ID = "yam.team.broom";
+
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg?.type === "BG_GENERATE_RULE") {
     (async () => {
@@ -177,6 +179,20 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         sendResponse({ type: "BG_GENERATE_RULE_RESULT", ok: false, error: e.message });
       }
     })();
+    return true;
+  }
+  if (msg?.type === "OPEN_ONBOARDING_APP") {
+    chrome.runtime.sendNativeMessage(
+      NATIVE_APP_ID,
+      { command: "open-onboarding-app" },
+      (response) => {
+        if (chrome.runtime.lastError) {
+          sendResponse({ ok: false, error: chrome.runtime.lastError.message });
+          return;
+        }
+        sendResponse(response && typeof response === "object" ? response : { ok: true });
+      }
+    );
     return true;
   }
   return false;
