@@ -67,8 +67,10 @@ async function setPref(key, value) {
 }
 
 function getVersionAndBuild() {
-  const raw = chrome.runtime?.getManifest?.()?.version || "0";
-  const parts = String(raw).split(".");
+  const raw = String(chrome.runtime?.getManifest?.()?.version || "0").trim();
+  const paren = raw.match(/^([\d.]+)\s*\((\d+)\)$/);
+  if (paren) return { version: paren[1], build: paren[2] };
+  const parts = raw.split(".");
   const build = parts.length >= 4 ? parts[3] : "1";
   let head = parts.slice(0, Math.min(3, parts.length));
   while (head.length > 2 && head[head.length - 1] === "0") head.pop();
@@ -612,7 +614,6 @@ function pickerStylesheet() {
       #${PANEL_ID} .bp-btn { background: rgba(30,41,59,0.7); color: #e2e8f0; border-color: rgba(148,163,184,0.22); }
       #${PANEL_ID} textarea { background: rgba(15,23,42,0.7); border-color: rgba(148,163,184,0.22); color: #f1f5f9; }
       #${PANEL_ID} .bp-err { background: rgba(127,29,29,0.4); border-color: rgba(239,68,68,0.3); color: #fca5a5; }
-      #${LAUNCHER_ID} { background: rgba(15,23,42,0.78) !important; border-color: rgba(148,163,184,0.18) !important; }
     }
 
     /* ── Persistent launcher ─────────────────── */
@@ -621,26 +622,29 @@ function pickerStylesheet() {
       position: fixed !important;
       bottom: 22px !important;
       right: 22px !important;
-      width: 52px !important;
-      height: 52px !important;
+      width: 54px !important;
+      height: 54px !important;
       z-index: 2147483640 !important;
       font-family: -apple-system, system-ui, sans-serif !important;
     }
     #${LAUNCHER_ID} {
       all: initial !important;
       position: relative !important;
-      width: 52px !important;
-      height: 52px !important;
+      width: 54px !important;
+      height: 54px !important;
       border-radius: 50% !important;
-      border: 1px solid rgba(148,163,184,0.32) !important;
-      background: rgba(255,255,255,0.92) !important;
+      border: 1px solid rgba(107, 67, 33, 0.28) !important;
+      background: rgba(255,255,255,0.98) !important;
       backdrop-filter: blur(18px) saturate(1.4) !important;
       -webkit-backdrop-filter: blur(18px) saturate(1.4) !important;
-      box-shadow: 0 8px 24px rgba(15,23,42,0.18), 0 2px 6px rgba(15,23,42,0.08) !important;
+      box-shadow:
+        0 14px 36px rgba(15,23,42,0.28),
+        0 4px 10px rgba(15,23,42,0.14),
+        inset 0 0 0 1px rgba(255,255,255,0.6) !important;
       display: flex !important;
       align-items: center !important;
       justify-content: center !important;
-      font-size: 26px !important;
+      font-size: 28px !important;
       line-height: 1 !important;
       cursor: pointer !important;
       user-select: none !important;
@@ -649,26 +653,48 @@ function pickerStylesheet() {
       padding: 0 !important;
       animation: bsweep-launcher-enter 0.85s cubic-bezier(.34,1.56,.64,1) both !important;
     }
-    #${LAUNCHER_ID}:hover { transform: scale(1.1) rotate(-8deg) !important; box-shadow: 0 12px 30px rgba(15,23,42,0.24) !important; }
+    #${LAUNCHER_ID}:hover {
+      transform: scale(1.12) rotate(-8deg) !important;
+      box-shadow:
+        0 18px 42px rgba(15,23,42,0.34),
+        0 6px 14px rgba(15,23,42,0.18),
+        inset 0 0 0 1px rgba(255,255,255,0.7) !important;
+      border-color: rgba(107, 67, 33, 0.55) !important;
+    }
     #${LAUNCHER_ID}:active { transform: scale(0.92) rotate(-12deg) !important; }
     #${LAUNCHER_ID}.squash { animation: bsweep-launcher-squash 0.32s cubic-bezier(.34,1.56,.64,1) !important; }
     #${LAUNCHER_ID}.active {
-      background: linear-gradient(135deg, rgba(37,99,235,0.58), rgba(124,58,237,0.58)) !important;
-      border-color: rgba(255,255,255,0.34) !important;
-      box-shadow: 0 10px 22px rgba(37,99,235,0.18) !important;
+      background: linear-gradient(135deg, rgba(176,122,69,0.32), rgba(107,67,33,0.32)) !important;
+      border-color: rgba(107,67,33,0.55) !important;
+      box-shadow:
+        0 14px 32px rgba(107,67,33,0.32),
+        0 4px 10px rgba(107,67,33,0.18),
+        inset 0 0 0 1px rgba(255,255,255,0.45) !important;
       animation: bsweep-launcher-wiggle 0.7s ease-in-out infinite alternate !important;
     }
     #${LAUNCHER_ID}[data-mode="plant"] {
-      background: linear-gradient(135deg, rgba(56,161,105,0.58), rgba(108,197,81,0.58)) !important;
-      box-shadow: 0 10px 22px rgba(56,161,105,0.18) !important;
+      background: linear-gradient(135deg, rgba(56,161,105,0.32), rgba(108,197,81,0.32)) !important;
+      border-color: rgba(56,161,105,0.5) !important;
+      box-shadow:
+        0 14px 32px rgba(56,161,105,0.30),
+        0 4px 10px rgba(56,161,105,0.16),
+        inset 0 0 0 1px rgba(255,255,255,0.45) !important;
     }
     #${LAUNCHER_ID}[data-mode="restore"] {
-      background: linear-gradient(135deg, rgba(20,184,166,0.58), rgba(14,165,233,0.58)) !important;
-      box-shadow: 0 10px 22px rgba(14,165,233,0.17) !important;
+      background: linear-gradient(135deg, rgba(20,184,166,0.32), rgba(14,165,233,0.32)) !important;
+      border-color: rgba(14,165,233,0.5) !important;
+      box-shadow:
+        0 14px 32px rgba(14,165,233,0.30),
+        0 4px 10px rgba(14,165,233,0.16),
+        inset 0 0 0 1px rgba(255,255,255,0.45) !important;
     }
     #${LAUNCHER_ID}[data-mode="broom"] {
-      background: linear-gradient(135deg, rgba(37,99,235,0.58), rgba(124,58,237,0.58)) !important;
-      box-shadow: 0 10px 22px rgba(37,99,235,0.18) !important;
+      background: linear-gradient(135deg, rgba(176,122,69,0.36), rgba(107,67,33,0.36)) !important;
+      border-color: rgba(107,67,33,0.6) !important;
+      box-shadow:
+        0 14px 32px rgba(107,67,33,0.32),
+        0 4px 10px rgba(107,67,33,0.18),
+        inset 0 0 0 1px rgba(255,255,255,0.45) !important;
     }
 
     /* ── Hover fan menu ──────────────────────── */
@@ -687,12 +713,15 @@ function pickerStylesheet() {
       display: inline-flex !important;
       align-items: center !important;
       gap: 8px !important;
-      height: 40px !important;
-      padding: 0 14px 0 12px !important;
+      height: 42px !important;
+      padding: 0 16px 0 14px !important;
       border-radius: 999px !important;
-      background: rgba(255,255,255,0.96) !important;
-      border: 1px solid rgba(148,163,184,0.28) !important;
-      box-shadow: 0 6px 18px rgba(15,23,42,0.14), 0 1px 3px rgba(15,23,42,0.06) !important;
+      background: rgba(255,255,255,0.99) !important;
+      border: 1px solid rgba(107,67,33,0.24) !important;
+      box-shadow:
+        0 10px 24px rgba(15,23,42,0.22),
+        0 3px 6px rgba(15,23,42,0.12),
+        inset 0 0 0 1px rgba(255,255,255,0.6) !important;
       backdrop-filter: blur(14px) saturate(1.3) !important;
       -webkit-backdrop-filter: blur(14px) saturate(1.3) !important;
       font: 600 13px/1 -apple-system, system-ui, sans-serif !important;
@@ -701,12 +730,18 @@ function pickerStylesheet() {
       user-select: none !important;
       opacity: 0 !important;
       transform: translateX(8px) translateY(8px) scale(0.85) !important;
-      transition: opacity 0.18s ease, transform 0.24s cubic-bezier(.34,1.56,.64,1), box-shadow 0.15s !important;
+      transition: opacity 0.18s ease, transform 0.24s cubic-bezier(.34,1.56,.64,1), box-shadow 0.18s, background 0.18s, border-color 0.18s, color 0.18s !important;
       pointer-events: none !important;
     }
     #${LAUNCHER_WRAP_ID} .broom-fan-chip:hover {
-      box-shadow: 0 8px 18px rgba(15,23,42,0.16), 0 2px 5px rgba(15,23,42,0.08) !important;
-      transform: translateX(0) translateY(-1px) scale(1.02) !important;
+      box-shadow:
+        0 14px 28px rgba(15,23,42,0.26),
+        0 4px 8px rgba(15,23,42,0.14),
+        inset 0 0 0 1px rgba(255,255,255,0.7) !important;
+      transform: translateX(-2px) translateY(-2px) scale(1.05) !important;
+    }
+    #${LAUNCHER_WRAP_ID} .broom-fan-chip:active {
+      transform: translateX(0) translateY(0) scale(0.97) !important;
     }
     #${LAUNCHER_WRAP_ID} .broom-fan-glyph {
       font-size: 18px !important;
@@ -727,20 +762,24 @@ function pickerStylesheet() {
     #${LAUNCHER_WRAP_ID}.broom-fan-open .broom-fan-chip:nth-child(3) { transition-delay: 60ms; }
     #${LAUNCHER_WRAP_ID}.broom-fan-open .broom-fan-chip:nth-child(4) { transition-delay: 0ms; }
     #${LAUNCHER_WRAP_ID} .broom-fan-chip[data-mode="plant"]:hover {
-      background: linear-gradient(135deg, rgba(108,197,81,0.10), rgba(56,161,105,0.10)) !important;
-      border-color: rgba(56,161,105,0.34) !important;
+      background: linear-gradient(135deg, rgba(108,197,81,0.22), rgba(56,161,105,0.22)) !important;
+      border-color: rgba(56,161,105,0.6) !important;
+      color: #14532d !important;
     }
     #${LAUNCHER_WRAP_ID} .broom-fan-chip[data-mode="broom"]:hover {
-      background: linear-gradient(135deg, rgba(124,58,237,0.08), rgba(37,99,235,0.08)) !important;
-      border-color: rgba(37,99,235,0.34) !important;
+      background: linear-gradient(135deg, rgba(176,122,69,0.24), rgba(107,67,33,0.24)) !important;
+      border-color: rgba(107,67,33,0.6) !important;
+      color: #4a2f15 !important;
     }
     #${LAUNCHER_WRAP_ID} .broom-fan-chip[data-mode="restore"]:hover {
-      background: linear-gradient(135deg, rgba(20,184,166,0.10), rgba(14,165,233,0.10)) !important;
-      border-color: rgba(14,165,233,0.34) !important;
+      background: linear-gradient(135deg, rgba(20,184,166,0.22), rgba(14,165,233,0.22)) !important;
+      border-color: rgba(14,165,233,0.6) !important;
+      color: #0c4a6e !important;
     }
     #${LAUNCHER_WRAP_ID} .broom-fan-chip[data-action="settings"]:hover {
-      background: linear-gradient(135deg, rgba(100,116,139,0.16), rgba(71,85,105,0.16)) !important;
-      border-color: rgba(100,116,139,0.5) !important;
+      background: linear-gradient(135deg, rgba(100,116,139,0.22), rgba(71,85,105,0.22)) !important;
+      border-color: rgba(71,85,105,0.6) !important;
+      color: #1e293b !important;
     }
 
     /* ── Settings popover ────────────────────── */
@@ -806,7 +845,7 @@ function pickerStylesheet() {
     #${SETTINGS_ID} .bs-switch-track {
       position: absolute !important;
       inset: 0 !important;
-      background: rgba(148,163,184,0.4) !important;
+      background: rgba(122, 74, 37, 0.22) !important;
       border-radius: 999px !important;
       transition: background 0.18s ease !important;
       cursor: pointer !important;
@@ -824,7 +863,7 @@ function pickerStylesheet() {
       transition: transform 0.18s cubic-bezier(.34,1.56,.64,1) !important;
     }
     #${SETTINGS_ID} .bs-switch input:checked ~ .bs-switch-track {
-      background: linear-gradient(135deg, #2563eb, #7c3aed) !important;
+      background: linear-gradient(135deg, #b07a45, #6b4321) !important;
     }
     #${SETTINGS_ID} .bs-switch input:checked ~ .bs-switch-track::after {
       transform: translateX(16px) !important;
@@ -1748,22 +1787,14 @@ function openSettingsPopover() {
     if (enabled) playBroomSound();
   });
 
-  pop.querySelector('[data-act="rules"]').addEventListener("click", (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    const url = chrome.runtime.getURL("popup.html");
-    window.open(url, "_blank", "noopener,noreferrer");
-  });
-
-  pop.querySelector('[data-act="onboarding"]').addEventListener("click", (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    closeSettingsPopover();
-    chrome.runtime.sendMessage({ type: "OPEN_ACTION_POPUP" }, (response) => {
-      if (chrome.runtime.lastError || (response && response.ok === false)) {
-        console.error("[broom] open popup failed:", chrome.runtime.lastError?.message || response?.error);
-      }
-    });
+  pop.querySelector('input[data-pref="showChanges"]').addEventListener("change", async (e) => {
+    const enabled = !!e.currentTarget.checked;
+    await setPref("showChanges", enabled);
+    if (enabled) {
+      for (const r of appliedRules) applyRule(r);
+    } else {
+      for (const r of appliedRules) removeRule(r.id);
+    }
   });
 
   pop.querySelector('[data-act="reset"]').addEventListener("click", async (e) => {
@@ -2548,7 +2579,13 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area === "local" && changes[RULES_KEY]) void refreshRules();
   if (area === "local" && changes[PREFS_KEY]) {
+    const prevShow = cachedPrefs.showChanges !== false;
     cachedPrefs = { ...DEFAULT_PREFS, ...(changes[PREFS_KEY].newValue || {}) };
+    const nextShow = cachedPrefs.showChanges !== false;
+    if (prevShow !== nextShow) {
+      if (nextShow) for (const r of appliedRules) applyRule(r);
+      else for (const r of appliedRules) removeRule(r.id);
+    }
   }
 });
 
