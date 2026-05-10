@@ -372,11 +372,13 @@ const OVERLAY_STYLE_ID = "broom-picker-style";
 const HIGHLIGHT_ID = "broom-picker-highlight";
 const PANEL_ID = "broom-panel";
 const LAUNCHER_ID = "broom-launcher";
+const LAUNCHER_WRAP_ID = "broom-launcher-wrap";
 const SWEEP_ID = "broom-sweep";
 const UNDO_TOAST_ID = "broom-undo-toast";
-const OUR_UI_SELECTOR = `#${PANEL_ID},#${HIGHLIGHT_ID},#${LAUNCHER_ID},#${UNDO_TOAST_ID},[id^="${SWEEP_ID}"]`;
+const OUR_UI_SELECTOR = `#${PANEL_ID},#${HIGHLIGHT_ID},#${LAUNCHER_ID},#${LAUNCHER_WRAP_ID},#${UNDO_TOAST_ID},[id^="${SWEEP_ID}"]`;
 
 let undoToastTimer = null;
+let broomSession = []; // rules swept in the current/most-recent broom session
 
 let activeMode = null; // "broom" | "plant" | "restore" | null
 let pickerTarget = null;
@@ -424,6 +426,8 @@ function startMode(mode) {
   if (launcher) launcher.textContent = mode === "plant" ? "🌱" : mode === "restore" ? "♻️" : "🧹";
 
   if (mode === "broom") {
+    broomSession = [];
+    hideUndoToast();
     document.documentElement.classList.add("broom-picking");
     ensureHighlight();
     document.addEventListener("mouseover", onOver, true);
@@ -452,6 +456,7 @@ function stopMode() {
   document.removeEventListener("click", onClick, true);
   if (prev === "plant") removeEmptySlotAffordances();
   if (prev === "restore") exitRestoreMode();
+  if (prev === "broom" && broomSession.length > 0) showUndoToast(broomSession.slice());
 }
 
 // Backward-compat aliases (popup still sends CONTENT_START_PICKER → broom mode)
@@ -560,7 +565,6 @@ function pickerStylesheet(cursorValue) {
     }
     #${PANEL_ID} .bp-btn.primary:hover { filter: brightness(1.08); box-shadow: 0 8px 22px rgba(37,99,235,0.36); }
 
-    #${PANEL_ID} .bp-llm { margin-top: 14px; }
     #${PANEL_ID} .bp-label {
       font-size: 11px; font-weight: 600; color: #64748b;
       text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 6px;
@@ -1207,7 +1211,7 @@ const SPARKLE_GLYPHS = ["✨", "✦", "✧", "⭐", "💫"];
 // Spawn a small burst of sparkles at viewport coords (for clicks/successes).
 function playBroomSound() {
   try {
-    const url = chrome.runtime.getURL("magic-swoosh.mp3");
+    const url = chrome.runtime.getURL("magic-swoosh.m4a");
     console.log("[broom] playing sound:", url);
     const audio = new Audio(url);
     audio.volume = 0.6;
@@ -1338,8 +1342,6 @@ function globalKeydown(e) {
 }
 
 // ── Always-present launcher ───────────────────────────────────────────────────
-
-const LAUNCHER_WRAP_ID = "broom-launcher-wrap";
 
 function installLauncher() {
   if (document.getElementById(LAUNCHER_WRAP_ID)) return;
@@ -1524,7 +1526,7 @@ async function playSweepAndHide(el, selector) {
   await upsertRuleLocal(rule);
   applyRule(rule);
 
-  showUndoToast(rule, { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 });
+  broomSession.push(rule);
 
   // Cleanup overlay; restore element styles in case the rule was rejected.
   overlay.remove();
@@ -1545,28 +1547,10 @@ function openPanel(el) {
     <div class="bp-sel"></div>
     <div class="bp-actions">
       <button class="bp-btn primary" data-type="hide">Hide</button>
-      <button class="bp-btn" data-type="restyle">Restyle…</button>
-      <button class="bp-btn" data-type="inject">Inject…</button>
-    </div>
-    <div class="bp-llm" id="broom-llm" style="display:none">
-      <div class="bp-label" id="broom-llm-label">Describe the change</div>
-      <textarea id="broom-instruction" placeholder="e.g. make the font larger and blue, remove the sidebar…"></textarea>
-      <div class="bp-submit-row">
-        <button class="bp-btn primary" id="broom-submit">Generate</button>
-        <span class="bp-status" id="broom-status"></span>
-      </div>
-      <div class="bp-err" id="broom-err" style="display:none"></div>
     </div>`;
 
   panel.querySelector(".bp-sel").textContent = selector;
   document.documentElement.appendChild(panel);
-
-  const llmBox = panel.querySelector("#broom-llm");
-  const llmLabel = panel.querySelector("#broom-llm-label");
-  const instruction = panel.querySelector("#broom-instruction");
-  const statusEl = panel.querySelector("#broom-status");
-  const errEl = panel.querySelector("#broom-err");
-  let pendingType = null;
 
   panel.querySelectorAll("button[data-type]").forEach((btn) => {
     btn.addEventListener("click", async () => {
@@ -1574,49 +1558,11 @@ function openPanel(el) {
       if (t === "hide") {
         closePanel();
         await playSweepAndHide(el, selector);
-        return;
       }
-      pendingType = t;
-      const labels = { restyle: "Describe the style change", inject: "What text should appear?" };
-      llmLabel.textContent = labels[t] || "Describe the change";
-      llmBox.style.display = "block";
-      instruction.focus();
     });
   });
 
   panel.querySelector("#broom-cancel").addEventListener("click", closePanel);
-
-  panel.querySelector("#broom-submit").addEventListener("click", async () => {
-    errEl.style.display = "none";
-    statusEl.textContent = "Thinking…";
-    panel.classList.add("thinking");
-    try {
-      const res = await chrome.runtime.sendMessage({
-        type: "BG_GENERATE_RULE",
-        instruction: instruction.value,
-        ruleType: pendingType,
-        element: collectContext(el, selector),
-        hostname: location.hostname,
-      });
-      if (!res?.ok) throw new Error(res?.error || "Unknown error");
-      if (!safeQueryAll(res.rule.selector.primary).length) throw new Error(`Selector matched nothing: ${res.rule.selector.primary}`);
-      applyRule(res.rule);
-      // Success feedback: panel glows green, target sparkles, then close
-      panel.classList.remove("thinking");
-      panel.classList.add("success");
-      const targetEl = safeQueryAll(res.rule.selector.primary)[0];
-      if (targetEl) {
-        const tr = targetEl.getBoundingClientRect();
-        spawnSparklePuff(tr.left + tr.width / 2, tr.top + tr.height / 2, 8, 60);
-      }
-      setTimeout(() => closePanel(), 480);
-    } catch (e) {
-      panel.classList.remove("thinking");
-      errEl.textContent = e.message;
-      errEl.style.display = "block";
-      statusEl.textContent = "";
-    }
-  });
 }
 
 function closePanel() { document.getElementById(PANEL_ID)?.remove(); }
@@ -1628,20 +1574,6 @@ function makeHideRule(selector, originalBox) {
   }
   return { id: uuid(), hostname: location.hostname, type: "hide", selector: { primary: selector, fallbacks: [], semantic: "" }, payload, enabled: true, createdAt: Date.now(), lastAppliedAt: null, lastFailedAt: null, failCount: 0 };
 }
-
-function collectContext(el, selectorGuess) {
-  return {
-    outerHTML: el.outerHTML.slice(0, 2048),
-    tagName: el.tagName.toLowerCase(),
-    id: el.id || null,
-    classes: Array.from(el.classList),
-    selectorGuess,
-    parentSelectorGuess: el.parentElement ? buildSelector(el.parentElement) : null,
-    textSnippet: (el.textContent || "").trim().slice(0, 200),
-  };
-}
-
-function safeQueryAll(sel) { try { return Array.from(document.querySelectorAll(sel)); } catch { return []; } }
 
 // ── Planting: empty slot affordances + click handler + toast ─────────────────
 
@@ -1889,13 +1821,16 @@ function makePlantRule(hideRule, plant) {
 
 // ── Undo toast (revive the just-swept element) ──────────────────────────────
 
-function showUndoToast(rule, position) {
+function showUndoToast(rules) {
   hideUndoToast();
+  if (!rules.length) return;
+  const count = rules.length;
+  const label = count === 1 ? "Swept" : `Swept ${count}`;
   const toast = document.createElement("div");
   toast.id = UNDO_TOAST_ID;
   toast.innerHTML = `
     <span class="but-icon">🧹</span>
-    <span class="but-msg">Swept</span>
+    <span class="but-msg">${label}</span>
     <button class="but-btn" data-act="undo" type="button">Undo</button>
   `;
   document.documentElement.appendChild(toast);
@@ -1903,13 +1838,20 @@ function showUndoToast(rule, position) {
   toast.querySelector('[data-act="undo"]').addEventListener("click", async (e) => {
     e.preventDefault();
     e.stopPropagation();
-    appliedRules = appliedRules.filter((r) => r.id !== rule.id);
-    styleCache.delete(rule.id);
-    rebuildStyleTag();
-    document.querySelectorAll(`.broom-restore-overlay[${RESTORE_OVERLAY_ATTR}="${rule.id.replace(/"/g, '\\"')}"]`).forEach((n) => n.remove());
-    if (position) spawnSparklePuff(position.x, position.y, 8, 60);
     hideUndoToast();
-    try { await deleteRuleLocal(rule.hostname, rule.id); } catch { /* best-effort */ }
+    const ids = new Set(rules.map((r) => r.id));
+    appliedRules = appliedRules.filter((r) => !ids.has(r.id));
+    for (const r of rules) styleCache.delete(r.id);
+    rebuildStyleTag();
+    for (const r of rules) {
+      document.querySelectorAll(`.broom-restore-overlay[${RESTORE_OVERLAY_ATTR}="${r.id.replace(/"/g, '\\"')}"]`).forEach((n) => n.remove());
+    }
+    if (count === 1) {
+      spawnSparklePuff(window.innerWidth / 2, window.innerHeight / 2, 8, 80);
+    }
+    for (const r of rules) {
+      try { await deleteRuleLocal(r.hostname, r.id); } catch { /* best-effort */ }
+    }
   });
 
   toast.addEventListener("mouseenter", () => clearTimeout(undoToastTimer));
