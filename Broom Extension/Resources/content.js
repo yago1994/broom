@@ -1126,6 +1126,12 @@ function pickerStylesheet(cursorValue) {
       display: block !important;
       pointer-events: none !important;
     }
+    /* In broom mode, planted decorations become clickable so the user can
+       sweep them away. Container stays pointer-events:none to not block
+       page interaction; only the plant's visible footprint is interactive. */
+    html[data-broom-mode="broom"] #${PLANT_OVERLAY_ID} .broom-plant-frame {
+      pointer-events: auto !important;
+    }
     /* Inner plant — animated only (rotate/scale). No translate here so
        sway and pop-in cannot drift away from the anchor. */
     #${PLANT_OVERLAY_ID} .broom-plant {
@@ -1401,6 +1407,21 @@ function hideSelectorTag() {
   tagEl = null;
 }
 
+// Show a custom label (e.g. "🌱 Pothos") instead of the tag.class string.
+function showSelectorTagText(text, anchorEl) {
+  if (!tagEl) {
+    tagEl = document.createElement("div");
+    tagEl.id = "broom-tag";
+    document.documentElement.appendChild(tagEl);
+  }
+  tagEl.textContent = text;
+  const r = anchorEl.getBoundingClientRect();
+  const top = Math.max(8, r.top - 26);
+  const left = Math.max(8, Math.min(innerWidth - 200, r.left));
+  tagEl.style.top = `${top}px`;
+  tagEl.style.left = `${left}px`;
+}
+
 function screenShake() {
   const html = document.documentElement;
   html.classList.remove("bsweep-shake");
@@ -1421,10 +1442,29 @@ function popTargetThen(el, cb) {
   }, 180);
 }
 
+// Resolve a hover/click target. If the user is pointing at one of our
+// own planted decorations, return the plant frame (so the highlight box
+// snaps to the plant's visible footprint instead of jittering between
+// foliage / pot / SVG paths). Returns { target, plantRule? }.
+function resolveBroomTarget(rawTarget) {
+  if (!rawTarget) return null;
+  const anchor = rawTarget.closest && rawTarget.closest(".broom-plant-anchor");
+  if (anchor) {
+    const ruleId = anchor.getAttribute(PLANT_OVERLAY_ATTR);
+    const rule = appliedRules.find((r) => r.id === ruleId);
+    const frame = anchor.querySelector(".broom-plant-frame") || anchor;
+    return { target: frame, plantRule: rule || null };
+  }
+  return { target: rawTarget, plantRule: null };
+}
+
 function onOver(e) {
-  if (activeMode !== "broom" || isOurUI(e.target)) return;
-  pickerTarget = e.target;
-  const r = e.target.getBoundingClientRect();
+  if (activeMode !== "broom") return;
+  const resolved = resolveBroomTarget(e.target);
+  if (!resolved) return;
+  if (!resolved.plantRule && isOurUI(e.target)) return;
+  pickerTarget = resolved.target;
+  const r = resolved.target.getBoundingClientRect();
   const h = document.getElementById(HIGHLIGHT_ID);
   if (h) {
     Object.assign(h.style, {
@@ -1432,13 +1472,29 @@ function onOver(e) {
       width: `${r.width}px`, height: `${r.height}px`,
     });
   }
-  showSelectorTag(e.target);
+  if (resolved.plantRule) {
+    const name = PLANT_NAMES[resolved.plantRule.payload.plant.kind] || "plant";
+    showSelectorTagText(`🌱 ${name}`, resolved.target);
+  } else {
+    showSelectorTag(resolved.target);
+  }
 }
 
 function onClick(e) {
-  if (activeMode !== "broom" || isOurUI(e.target)) return;
+  if (activeMode !== "broom") return;
+  const resolved = resolveBroomTarget(e.target);
+  if (!resolved) return;
+  if (!resolved.plantRule && isOurUI(e.target)) return;
   e.preventDefault(); e.stopPropagation();
-  const target = e.target;
+
+  if (resolved.plantRule) {
+    spawnSparklePuff(e.clientX, e.clientY, 6, 50);
+    stopMode();
+    void sweepAwayPlant(resolved.plantRule);
+    return;
+  }
+
+  const target = resolved.target;
   const selector = buildSelector(target);
   spawnSparklePuff(e.clientX, e.clientY, 6, 50);
   // Stay in brooming mode so multiple elements can be wiped in a row.
@@ -1466,6 +1522,14 @@ function globalKeydown(e) {
     e.preventDefault();
     e.stopPropagation();
     const target = pickerTarget;
+    const plantAnchor = target.closest && target.closest(".broom-plant-anchor");
+    if (plantAnchor) {
+      const ruleId = plantAnchor.getAttribute(PLANT_OVERLAY_ATTR);
+      const rule = appliedRules.find((r) => r.id === ruleId);
+      stopMode();
+      if (rule) void sweepAwayPlant(rule);
+      return;
+    }
     const selector = buildSelector(target);
     // Stay in brooming mode so the user can wipe multiple elements in a row.
     // Just clear the current target + visuals; the next mouseover repopulates.
@@ -1775,6 +1839,107 @@ async function playSweepAndHide(el, selector) {
   // Cleanup overlay; restore element styles in case the rule was rejected.
   overlay.remove();
   if (el.isConnected) el.style.animation = prevAnim;
+}
+
+// Sweep an existing plant decoration away with the same broom animation
+// as a regular hide, then delete the decorate rule. The underlying hide
+// rule (and the empty plant slot it created) stays in place — the user
+// can replant something else later.
+async function sweepAwayPlant(rule) {
+  const escId = rule.id.replace(/"/g, '\\"');
+  const tracked = plantTracking.get(rule.id);
+  const frameEl = tracked && tracked.anchorEl && tracked.anchorEl.querySelector(".broom-plant-frame");
+  const innerEl = tracked && tracked.plantEl;
+
+  const cleanup = async () => {
+    appliedRules = appliedRules.filter((r) => r.id !== rule.id);
+    document.querySelectorAll(`[${INJECTED_ATTR}="${escId}"]`).forEach((n) => n.remove());
+    removeOverlayPlant(rule.id);
+    await deleteRuleLocal(rule.hostname, rule.id);
+  };
+
+  if (!frameEl || !frameEl.isConnected) {
+    await cleanup();
+    return;
+  }
+
+  ensurePickerStyles();
+  const rect = frameEl.getBoundingClientRect();
+  const tooSmall = rect.width < 8 || rect.height < 8;
+  const offscreen = rect.bottom < 0 || rect.top > innerHeight || rect.right < 0 || rect.left > innerWidth;
+  if (tooSmall || offscreen) {
+    await cleanup();
+    return;
+  }
+
+  const overlay = document.createElement("div");
+  overlay.id = `${SWEEP_ID}-${Date.now()}`;
+  overlay.className = SWEEP_ID;
+  Object.assign(overlay.style, {
+    position: "fixed",
+    top: `${rect.top}px`,
+    left: `${rect.left}px`,
+    width: `${rect.width}px`,
+    height: `${rect.height}px`,
+    pointerEvents: "none",
+    zIndex: "2147483647",
+    overflow: "visible",
+  });
+
+  const broomSize = Math.max(28, Math.min(rect.height * 0.9, 56));
+  const broom = document.createElement("div");
+  broom.className = "bsweep-broom";
+  broom.textContent = "🧹";
+  Object.assign(broom.style, {
+    position: "absolute",
+    top: "50%",
+    left: "0",
+    fontSize: `${broomSize}px`,
+    lineHeight: "1",
+    transformOrigin: "50% 50%",
+    willChange: "transform, opacity",
+  });
+  overlay.appendChild(broom);
+
+  const glyphs = ["🍃", "✨", "✦", "🌿", "💨"];
+  const sparkleCount = Math.min(14, Math.max(6, Math.round(rect.width / 28)));
+  for (let i = 0; i < sparkleCount; i++) {
+    const s = document.createElement("div");
+    s.className = "bsweep-sparkle";
+    s.textContent = glyphs[i % glyphs.length];
+    const dx = (Math.random() - 0.3) * Math.max(rect.width, 120);
+    const dy = -20 - Math.random() * 80;
+    const startX = 80 + Math.random() * 20;
+    const startY = 30 + Math.random() * 40;
+    const delay = Math.random() * 600;
+    Object.assign(s.style, {
+      position: "absolute",
+      top: `${startY}%`,
+      left: `${startX}%`,
+      fontSize: `${10 + Math.random() * 12}px`,
+      opacity: "0",
+      animation: `bsweep-sparkle 0.7s cubic-bezier(.2,.8,.4,1) ${delay}ms forwards`,
+    });
+    s.style.setProperty("--bx", `${dx}px`);
+    s.style.setProperty("--by", `${dy}px`);
+    overlay.appendChild(s);
+  }
+
+  document.documentElement.appendChild(overlay);
+  // Fade the inner plant element (which has no centering transform of its
+  // own, so the bsweep-target keyframe's transforms don't displace it).
+  if (innerEl) innerEl.style.animation = "bsweep-target 0.95s ease-in forwards";
+
+  setTimeout(() => {
+    const cx = rect.left + rect.width * 0.2;
+    const cy = rect.top + rect.height / 2;
+    spawnSparklePuff(cx, cy, 8, Math.max(60, rect.width * 0.4));
+    screenShake();
+  }, 760);
+
+  await new Promise((r) => setTimeout(r, 950));
+  overlay.remove();
+  await cleanup();
 }
 
 function openPanel(el) {
