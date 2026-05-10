@@ -66,31 +66,7 @@ async function setPref(key, value) {
   await chrome.storage.local.set({ [PREFS_KEY]: cachedPrefs });
 }
 
-// ── Plant catalog (trusted inline SVGs) ──────────────────────────────────────
-
-const POT_SVGS = {
-  terracotta: `<svg viewBox="0 0 100 60" preserveAspectRatio="none" aria-hidden="true"><path d="M14 6 L86 6 L78 56 Q50 60 22 56 Z" fill="#c2683a"/><path d="M14 6 L86 6 L82 18 Q50 22 18 18 Z" fill="#a8542a"/><rect x="10" y="2" width="80" height="6" rx="2" fill="#b85a30"/></svg>`,
-  ceramic: `<svg viewBox="0 0 100 60" preserveAspectRatio="none" aria-hidden="true"><path d="M16 4 Q50 0 84 4 L78 56 Q50 60 22 56 Z" fill="#ece7dd"/><ellipse cx="50" cy="6" rx="34" ry="4" fill="#d8d2c4"/><path d="M22 56 Q50 60 78 56 L78 50 Q50 54 22 50 Z" fill="#c8c2b3"/></svg>`,
-  none: ""
-};
-
-const PLANT_SVGS = {
-  pothos: `<svg viewBox="0 0 100 100" aria-hidden="true"><g fill="none" stroke="#3a7a3f" stroke-width="2.5" stroke-linecap="round"><path d="M50 92 Q42 70 30 52 Q20 38 14 22"/><path d="M50 92 Q58 70 70 52 Q80 38 86 22"/><path d="M50 92 Q50 72 48 50 Q44 30 40 14"/><path d="M50 92 Q56 80 64 70 Q72 60 76 50"/></g><g fill="#5cb262" stroke="#2e6b35" stroke-width="1.2" stroke-linejoin="round"><path d="M14 22 q-8 -1 -10 6 q3 7 11 5 q5 -3 -1 -11 z"/><path d="M40 14 q-9 1 -9 9 q6 5 13 2 q3 -4 -4 -11 z"/><path d="M30 52 q-10 0 -10 8 q5 6 13 3 q4 -4 -3 -11 z"/><path d="M48 50 q-9 -2 -11 6 q5 7 13 4 q4 -4 -2 -10 z"/><path d="M70 52 q10 0 10 8 q-5 6 -13 3 q-4 -4 3 -11 z"/><path d="M86 22 q8 -1 10 6 q-3 7 -11 5 q-5 -3 1 -11 z"/><path d="M76 50 q9 -1 10 7 q-5 5 -12 3 q-3 -4 2 -10 z"/></g></svg>`,
-  "bird-of-paradise": `<svg viewBox="0 0 100 100" aria-hidden="true"><g stroke="#2e6b35" stroke-width="1.2" stroke-linejoin="round"><path d="M50 95 Q38 70 30 40 Q26 22 32 8 Q42 26 46 56 Q47 78 50 95 Z" fill="#4ea05a"/><path d="M50 95 Q62 70 70 40 Q74 22 68 8 Q58 26 54 56 Q53 78 50 95 Z" fill="#4ea05a"/><path d="M50 95 Q50 60 50 30 Q52 14 56 4 Q54 30 52 60 Q51 80 50 95 Z" fill="#3f8a4d"/><path d="M50 95 Q42 78 38 60 Q34 44 36 26 Q42 44 44 64 Q45 80 50 95 Z" fill="#5db867"/><path d="M50 95 Q58 78 62 60 Q66 44 64 26 Q58 44 56 64 Q55 80 50 95 Z" fill="#5db867"/></g><g stroke="#a64a1a" stroke-width="1"><path d="M48 56 q-8 -4 -10 -12 q6 0 10 6 z" fill="#e8723a"/><path d="M52 56 q8 -4 10 -12 q-6 0 -10 6 z" fill="#d6a23a"/></g></svg>`,
-  "snake-plant": `<svg viewBox="0 0 100 100" aria-hidden="true"><g stroke="#2e6b35" stroke-width="1.2" stroke-linejoin="round"><path d="M50 95 Q44 60 40 30 Q38 14 44 4 Q48 24 50 60 Q50 80 50 95 Z" fill="#5fa55a"/><path d="M50 95 Q56 60 60 30 Q62 14 56 4 Q52 24 50 60 Q50 80 50 95 Z" fill="#4f944c"/><path d="M50 95 Q42 70 36 50 Q30 32 28 18 Q38 36 44 60 Q47 80 50 95 Z" fill="#6db768"/><path d="M50 95 Q58 70 64 50 Q70 32 72 18 Q62 36 56 60 Q53 80 50 95 Z" fill="#3f7e3d"/></g><g stroke="#d4d77a" stroke-width="1.4" fill="none" opacity="0.55"><path d="M44 14 q1 8 0 18"/><path d="M50 8 q0 12 0 22"/><path d="M56 14 q-1 8 0 18"/></g></svg>`,
-  monstera: `<svg viewBox="0 0 100 100" aria-hidden="true"><g stroke="#2e6b35" stroke-width="1.2" stroke-linejoin="round"><path d="M28 70 Q12 50 14 30 Q26 22 38 32 Q44 18 50 22 Q44 38 46 56 Q40 70 28 70 Z" fill="#4fa358"/><path d="M72 65 Q88 48 86 28 Q74 20 62 30 Q58 16 52 20 Q56 36 54 54 Q60 68 72 65 Z" fill="#5db867"/><path d="M50 90 Q42 78 42 64 Q42 50 50 36 Q58 50 58 64 Q58 78 50 90 Z" fill="#3f8a4d"/></g><g stroke="#2e6b35" stroke-width="1.2" fill="none" stroke-linecap="round"><path d="M22 36 q5 4 8 4"/><path d="M26 50 q5 3 9 3"/><path d="M78 36 q-5 4 -8 4"/><path d="M74 50 q-5 3 -9 3"/></g><path d="M50 90 Q50 70 50 50 Q50 30 50 18" stroke="#2e6b35" stroke-width="1.6" fill="none" stroke-linecap="round"/></svg>`,
-  fern: `<svg viewBox="0 0 100 100" aria-hidden="true"><g stroke="#2e6b35" stroke-width="1.4" stroke-linecap="round" fill="none"><path d="M50 95 Q42 70 26 50 Q16 38 8 30"/><path d="M50 95 Q58 70 74 50 Q84 38 92 30"/><path d="M50 95 Q48 70 44 40 Q42 22 40 8"/><path d="M50 95 Q52 70 56 40 Q58 22 60 8"/><path d="M50 95 Q50 70 50 40 Q50 22 50 4"/></g><g fill="#5db867" stroke="#3a7a3f" stroke-width="0.8"><ellipse cx="14" cy="34" rx="6" ry="2.4" transform="rotate(-30 14 34)"/><ellipse cx="22" cy="44" rx="6" ry="2.4" transform="rotate(-22 22 44)"/><ellipse cx="32" cy="54" rx="6" ry="2.4" transform="rotate(-15 32 54)"/><ellipse cx="86" cy="34" rx="6" ry="2.4" transform="rotate(30 86 34)"/><ellipse cx="78" cy="44" rx="6" ry="2.4" transform="rotate(22 78 44)"/><ellipse cx="68" cy="54" rx="6" ry="2.4" transform="rotate(15 68 54)"/><ellipse cx="42" cy="20" rx="5" ry="2.2" transform="rotate(-10 42 20)"/><ellipse cx="58" cy="20" rx="5" ry="2.2" transform="rotate(10 58 20)"/><ellipse cx="44" cy="36" rx="5" ry="2.2" transform="rotate(-10 44 36)"/><ellipse cx="56" cy="36" rx="5" ry="2.2" transform="rotate(10 56 36)"/><ellipse cx="50" cy="14" rx="5" ry="2.2"/><ellipse cx="50" cy="30" rx="5" ry="2.2"/><ellipse cx="50" cy="48" rx="5" ry="2.2"/></g></svg>`,
-  succulent: `<svg viewBox="0 0 100 100" aria-hidden="true"><g stroke="#2e6b35" stroke-width="1.2" stroke-linejoin="round"><ellipse cx="50" cy="80" rx="24" ry="10" fill="#6dbf68"/><ellipse cx="30" cy="64" rx="10" ry="14" transform="rotate(-30 30 64)" fill="#5db35e"/><ellipse cx="70" cy="64" rx="10" ry="14" transform="rotate(30 70 64)" fill="#5db35e"/><ellipse cx="38" cy="50" rx="9" ry="14" transform="rotate(-15 38 50)" fill="#7bc97a"/><ellipse cx="62" cy="50" rx="9" ry="14" transform="rotate(15 62 50)" fill="#7bc97a"/><ellipse cx="50" cy="42" rx="8" ry="14" fill="#8fd687"/><ellipse cx="50" cy="58" rx="6" ry="10" fill="#a2dd92"/></g></svg>`
-};
-
-const PLANT_NAMES = {
-  pothos: "Pothos",
-  "bird-of-paradise": "Bird of paradise",
-  "snake-plant": "Snake plant",
-  monstera: "Monstera",
-  fern: "Fern",
-  succulent: "Succulent"
-};
+// Plant catalog (POT_SVGS, PLANT_SVGS, PLANT_NAMES) is defined in lib/plants.js
 
 const SHOVEL_CURSOR_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32"><path d="M22 3 l7 7 -3 3 -2 -2 -10 10 -3 -3 10 -10 -2 -2 z" fill="#caa376" stroke="#5a4424" stroke-width="1.4" stroke-linejoin="round"/><path d="M11 17 l-5 5 q-3 3 -1 5 q2 2 5 -1 l5 -5 z" fill="#7e8a96" stroke="#3a4047" stroke-width="1.4" stroke-linejoin="round"/></svg>`;
 
@@ -113,9 +89,9 @@ function randomFrom(arr) { return arr[Math.floor(Math.random() * arr.length)]; }
 function chooseRandomPlant(hideRule) {
   const box = (hideRule.payload && hideRule.payload.originalBox) || { width: 120, height: 120 };
   const h = box.height;
-  const small = ["succulent", "fern", "snake-plant"];
-  const medium = ["pothos", "fern", "snake-plant", "monstera"];
-  const large = ["bird-of-paradise", "monstera", "pothos"];
+  const small = ["succulent", "fern", "snake-plant", "cactus", "aloe", "lavender"];
+  const medium = ["pothos", "fern", "snake-plant", "monstera", "cactus", "aloe", "peace-lily", "calathea", "orchid", "zz-plant"];
+  const large = ["bird-of-paradise", "monstera", "pothos", "bamboo", "palm", "fiddle-leaf", "orchid", "zz-plant"];
   const pool = h < 90 ? small : h > 180 ? large : medium;
   return {
     kind: randomFrom(pool),
@@ -220,8 +196,36 @@ function applyPlant(rule, options) {
   }
 
   const plant = renderPlant(rule.payload.plant);
-  if (options && options.enterAnimation) plant.classList.add("broom-plant-enter");
+  if (options && options.enterAnimation) {
+    plant.classList.add("broom-plant-enter");
+    playPlantSound();
+    [
+      { px: -22, py: -14, color: "#825330", dur: 460, delay: 40 },
+      { px: -11, py: -25, color: "#6b4423", dur: 490, delay: 20 },
+      {  px: 2,  py: -28, color: "#9a6b3e", dur: 510, delay:  0 },
+      { px:  14, py: -23, color: "#7e5530", dur: 470, delay: 35 },
+      { px:  23, py: -12, color: "#4a2f1a", dur: 450, delay: 55 },
+    ].forEach(({ px, py, color, dur, delay }) => {
+      const p = document.createElement("span");
+      p.className = "broom-plant-particle";
+      p.style.cssText = `--px:${px}px;--py:${py}px;background:${color};--dur:${dur}ms;--delay:${delay}ms`;
+      slot.appendChild(p);
+    });
+  }
   slot.appendChild(plant);
+
+  slot.addEventListener("mouseenter", () => {
+    if (document.documentElement.dataset.broomMode === "broom") return;
+    if (plant.classList.contains("broom-plant-enter")) return;
+    plant.classList.remove("broom-plant-wiggling");
+    void plant.offsetWidth;
+    plant.classList.add("broom-plant-wiggling");
+  });
+  plant.addEventListener("animationend", (e) => {
+    if (e.animationName === "broom-plant-wiggle") {
+      plant.classList.remove("broom-plant-wiggling");
+    }
+  });
 
   if (anchor.parentNode) anchor.parentNode.insertBefore(slot, anchor.nextSibling);
 }
@@ -366,7 +370,6 @@ function stopMode() {
   document.removeEventListener("click", onClick, true);
   if (prev === "plant") removeEmptySlotAffordances();
   if (prev === "restore") exitRestoreMode();
-  if (prev === "broom" && broomSession.length > 0) showUndoToast(broomSession.slice());
 }
 
 // Backward-compat aliases (popup still sends CONTENT_START_PICKER → broom mode)
@@ -599,8 +602,8 @@ function pickerStylesheet(cursorValue) {
       pointer-events: none !important;
     }
     #${LAUNCHER_WRAP_ID} .broom-fan-chip:hover {
-      box-shadow: 0 8px 18px rgba(15,23,42,0.16), 0 2px 5px rgba(15,23,42,0.08) !important;
-      transform: translateX(0) translateY(-1px) scale(1.02) !important;
+      box-shadow: 0 6px 14px rgba(15,23,42,0.12), 0 1px 4px rgba(15,23,42,0.06) !important;
+      transform: translateX(0) translateY(-0.5px) scale(1.01) !important;
     }
     #${LAUNCHER_WRAP_ID} .broom-fan-glyph {
       font-size: 18px !important;
@@ -621,16 +624,16 @@ function pickerStylesheet(cursorValue) {
     #${LAUNCHER_WRAP_ID}.broom-fan-open .broom-fan-chip:nth-child(3) { transition-delay: 60ms; }
     #${LAUNCHER_WRAP_ID}.broom-fan-open .broom-fan-chip:nth-child(4) { transition-delay: 0ms; }
     #${LAUNCHER_WRAP_ID} .broom-fan-chip[data-mode="plant"]:hover {
-      background: linear-gradient(135deg, rgba(108,197,81,0.10), rgba(56,161,105,0.10)) !important;
-      border-color: rgba(56,161,105,0.34) !important;
+      background: linear-gradient(135deg, rgba(108,197,81,0.05), rgba(56,161,105,0.05)) !important;
+      border-color: rgba(56,161,105,0.22) !important;
     }
     #${LAUNCHER_WRAP_ID} .broom-fan-chip[data-mode="broom"]:hover {
-      background: linear-gradient(135deg, rgba(124,58,237,0.08), rgba(37,99,235,0.08)) !important;
-      border-color: rgba(37,99,235,0.34) !important;
+      background: linear-gradient(135deg, rgba(124,58,237,0.04), rgba(37,99,235,0.04)) !important;
+      border-color: rgba(37,99,235,0.22) !important;
     }
     #${LAUNCHER_WRAP_ID} .broom-fan-chip[data-mode="restore"]:hover {
-      background: linear-gradient(135deg, rgba(20,184,166,0.10), rgba(14,165,233,0.10)) !important;
-      border-color: rgba(14,165,233,0.34) !important;
+      background: linear-gradient(135deg, rgba(20,184,166,0.05), rgba(14,165,233,0.05)) !important;
+      border-color: rgba(14,165,233,0.22) !important;
     }
     #${LAUNCHER_WRAP_ID} .broom-fan-chip[data-action="settings"]:hover {
       background: linear-gradient(135deg, rgba(100,116,139,0.16), rgba(71,85,105,0.16)) !important;
@@ -963,7 +966,7 @@ function pickerStylesheet(cursorValue) {
     .broom-plant-slot {
       display: inline-block !important;
       vertical-align: top !important;
-      pointer-events: none !important;
+      pointer-events: auto !important;
       line-height: 0 !important;
       overflow: visible !important;
       position: relative !important;
@@ -983,11 +986,7 @@ function pickerStylesheet(cursorValue) {
       max-width: 100% !important;
       max-height: 100% !important;
       filter: drop-shadow(0 4px 6px rgba(15,23,42,0.18)) !important;
-    }
-    /* In broom mode, planted slots become hoverable/clickable so the user
-       can sweep them away. */
-    html[data-broom-mode="broom"] .broom-plant-slot {
-      pointer-events: auto !important;
+      transition: filter 200ms ease !important;
     }
     .broom-plant-foliage {
       position: relative !important;
@@ -1016,18 +1015,57 @@ function pickerStylesheet(cursorValue) {
     }
     .broom-plant-enter {
       animation:
-        broom-plant-popin 480ms cubic-bezier(.2,1.4,.4,1) both,
-        broom-plant-sway 5.5s ease-in-out infinite 480ms !important;
+        broom-plant-popin 600ms linear both,
+        broom-plant-sway 5.5s ease-in-out infinite 600ms !important;
+    }
+    .broom-plant-enter .broom-plant-pot {
+      animation: broom-plant-pot-enter 360ms cubic-bezier(.2,1.3,.4,1) 200ms both !important;
     }
     @keyframes broom-plant-popin {
-      0%   { opacity: 0; transform: scale(0.78) translateY(10px) rotate(-3deg); }
-      55%  { opacity: 1; transform: scale(1.08) translateY(-3px) rotate(2deg); }
-      100% { opacity: 1; transform: scale(1) translateY(0) rotate(0); }
+      0%   { opacity: 0; transform: scaleX(1.35) scaleY(0.05) translateY(6px); }
+      18%  { opacity: 1; transform: scaleX(0.80) scaleY(1.22) translateY(-10px); }
+      50%  { opacity: 1; transform: scaleX(1.07) scaleY(0.93) translateY(4px); }
+      72%  { opacity: 1; transform: scaleX(0.97) scaleY(1.04) translateY(-2px); }
+      88%  { opacity: 1; transform: scaleX(1.01) scaleY(0.99) translateY(1px); }
+      100% { opacity: 1; transform: scaleX(1)    scaleY(1)    translateY(0); }
+    }
+    @keyframes broom-plant-pot-enter {
+      0%   { opacity: 0; transform: translateY(10px) scale(0.85); }
+      100% { opacity: 1; transform: translateY(0)    scale(1); }
     }
     @keyframes broom-plant-sway {
       0%   { transform: rotate(-1.4deg); }
       50%  { transform: rotate(1.4deg); }
       100% { transform: rotate(-1.4deg); }
+    }
+    @keyframes broom-plant-wiggle {
+      0%   { transform: rotate(0deg)    scale(1); }
+      12%  { transform: rotate(13deg)   scale(1.06); }
+      28%  { transform: rotate(-9deg)   scale(1.03); }
+      44%  { transform: rotate(6deg)    scale(1.01); }
+      58%  { transform: rotate(-3.5deg) scale(1); }
+      72%  { transform: rotate(1.8deg); }
+      100% { transform: rotate(0deg); }
+    }
+    .broom-plant-wiggling {
+      animation: broom-plant-wiggle 680ms ease-out, broom-plant-sway 5.5s ease-in-out infinite 680ms !important;
+      filter: drop-shadow(0 8px 18px rgba(15,23,42,0.32)) !important;
+    }
+    @keyframes broom-particle-burst {
+      0%   { opacity: 1; transform: translate(0, 0) scale(1.2); }
+      100% { opacity: 0; transform: translate(var(--px), var(--py)) scale(0.2); }
+    }
+    .broom-plant-particle {
+      position: absolute !important;
+      bottom: 20% !important;
+      left: 50% !important;
+      width: 5px !important;
+      height: 5px !important;
+      border-radius: 50% !important;
+      pointer-events: none !important;
+      margin-left: -2.5px !important;
+      margin-bottom: -2.5px !important;
+      animation: broom-particle-burst var(--dur, 480ms) ease-out var(--delay, 0ms) both !important;
     }
 
     /* ── Plant toast ─────────────────────────── */
@@ -1106,6 +1144,9 @@ function pickerStylesheet(cursorValue) {
     }
     #${UNDO_TOAST_ID} .but-icon { font-size: 16px !important; }
     #${UNDO_TOAST_ID} .but-msg { flex: 1 1 auto !important; color: #f8fafc !important; }
+    html.broom-picking #${UNDO_TOAST_ID},
+    html.broom-picking #${UNDO_TOAST_ID} * { cursor: default !important; }
+    html.broom-picking #${UNDO_TOAST_ID} .but-btn { cursor: pointer !important; }
     #${UNDO_TOAST_ID} .but-btn {
       all: unset;
       cursor: pointer;
@@ -1176,7 +1217,7 @@ function pickerStylesheet(cursorValue) {
       #${PANEL_ID}, #${PANEL_ID}.thinking .bp-btn.primary, #${PANEL_ID}.success,
       #${LAUNCHER_WRAP_ID} .broom-fan-chip,
       .broom-empty-slot, .broom-empty-slot-label, .broom-empty-slot-soil,
-      .broom-plant, .broom-plant-enter, .broom-plant-anim-gentle-sway,
+      .broom-plant, .broom-plant-enter, .broom-plant-anim-gentle-sway, .broom-plant-particle, .broom-plant-wiggling,
       .broom-restore-overlay, .broom-restore-overlay.broom-restore-leaving, .broom-restore-plus,
       #${UNDO_TOAST_ID}, #${UNDO_TOAST_ID}.but-leaving,
       #${PLANT_TOAST_ID}, #${PLANT_TOAST_ID}.bpt-leaving {
@@ -1205,10 +1246,19 @@ const SPARKLE_GLYPHS = ["✨", "✦", "✧", "⭐", "💫"];
 function playBroomSound() {
   if (cachedPrefs.soundEnabled === false) return;
   try {
-    const url = chrome.runtime.getURL("magic-swoosh.mp3");
+    const url = chrome.runtime.getURL("magic-swoosh.m4a");
     console.log("[broom] playing sound:", url);
     const audio = new Audio(url);
     audio.volume = 0.6;
+    audio.play().catch(() => {});
+  } catch (_) {}
+}
+
+function playPlantSound() {
+  if (cachedPrefs.soundEnabled === false) return;
+  try {
+    const audio = new Audio(chrome.runtime.getURL("pop.mp3"));
+    audio.volume = 0.5;
     audio.play().catch(() => {});
   } catch (_) {}
 }
@@ -1513,14 +1563,14 @@ function openSettingsPopover() {
     </label>
     <div class="bs-divider"></div>
     <button class="bs-btn" data-act="rules" type="button">
-      <span class="bs-btn-glyph">📋</span><span>Manage rules for this site</span>
+      <span class="bs-btn-glyph">📋</span><span>See your changes on this site</span>
     </button>
     <button class="bs-btn" data-act="onboarding" type="button">
-      <span class="bs-btn-glyph">🪟</span><span>Open onboarding window</span>
+      <span class="bs-btn-glyph">🪟</span><span>About</span>
     </button>
     <div class="bs-divider"></div>
     <button class="bs-btn" data-act="reset" type="button">
-      <span class="bs-btn-glyph">🗑️</span><span>Clear all rules for this host</span>
+      <span class="bs-btn-glyph">🗑️</span><span>Restore original</span>
     </button>
   `;
   document.documentElement.appendChild(pop);
@@ -1555,7 +1605,7 @@ function openSettingsPopover() {
     e.preventDefault();
     e.stopPropagation();
     const host = location.hostname;
-    if (!confirm(`Clear all Broom rules for ${host}? This cannot be undone.`)) return;
+    if (!confirm(`Restore ${host} to its original state? All your Broom changes on this site will be undone.`)) return;
     await clearRulesForHost(host);
     for (const r of [...appliedRules]) removeRule(r.id);
     appliedRules = [];
@@ -1691,6 +1741,7 @@ async function playSweepAndHide(el, selector) {
   applyRule(rule);
 
   broomSession.push(rule);
+  showUndoToast([rule]);
 
   // Cleanup overlay; restore element styles in case the rule was rejected.
   overlay.remove();
@@ -2103,6 +2154,7 @@ function showUndoToast(rules) {
     e.stopPropagation();
     hideUndoToast();
     const ids = new Set(rules.map((r) => r.id));
+    broomSession = broomSession.filter((r) => !ids.has(r.id));
     appliedRules = appliedRules.filter((r) => !ids.has(r.id));
     for (const r of rules) styleCache.delete(r.id);
     rebuildStyleTag();
@@ -2114,6 +2166,9 @@ function showUndoToast(rules) {
     }
     for (const r of rules) {
       try { await deleteRuleLocal(r.hostname, r.id); } catch { /* best-effort */ }
+    }
+    if (broomSession.length > 0) {
+      showUndoToast([broomSession[broomSession.length - 1]]);
     }
   });
 

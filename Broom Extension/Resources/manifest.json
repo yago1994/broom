@@ -15,14 +15,14 @@
   "content_scripts": [
     {
       "matches": ["<all_urls>"],
-      "js": ["content.js"],
+      "js": ["lib/plants.js", "content.js"],
       "run_at": "document_start",
       "all_frames": false
     }
   ],
   "web_accessible_resources": [
     {
-      "resources": ["magic-swoosh.m4a"],
+      "resources": ["magic-swoosh.m4a", "pop.mp3"],
       "matches": ["<all_urls>"]
     }
   ]
