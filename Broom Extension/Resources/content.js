@@ -689,8 +689,8 @@ function pickerStylesheet(cursorValue) {
       pointer-events: none !important;
     }
     #${LAUNCHER_WRAP_ID} .broom-fan-chip:hover {
-      box-shadow: 0 10px 24px rgba(15,23,42,0.22), 0 2px 6px rgba(15,23,42,0.10) !important;
-      transform: translateX(0) translateY(-2px) scale(1.04) !important;
+      box-shadow: 0 8px 18px rgba(15,23,42,0.16), 0 2px 5px rgba(15,23,42,0.08) !important;
+      transform: translateX(0) translateY(-1px) scale(1.02) !important;
     }
     #${LAUNCHER_WRAP_ID} .broom-fan-glyph {
       font-size: 18px !important;
@@ -708,13 +708,17 @@ function pickerStylesheet(cursorValue) {
     }
     #${LAUNCHER_WRAP_ID}.broom-fan-open .broom-fan-chip:nth-child(1) { transition-delay: 60ms; }
     #${LAUNCHER_WRAP_ID}.broom-fan-open .broom-fan-chip:nth-child(2) { transition-delay: 0ms; }
+    #${LAUNCHER_WRAP_ID} .broom-fan-chip[data-mode="restore"]:hover {
+      background: linear-gradient(135deg, rgba(14,165,233,0.10), rgba(34,197,94,0.10)) !important;
+      border-color: rgba(14,165,233,0.34) !important;
+    }
     #${LAUNCHER_WRAP_ID} .broom-fan-chip[data-mode="plant"]:hover {
-      background: linear-gradient(135deg, rgba(108,197,81,0.18), rgba(56,161,105,0.18)) !important;
-      border-color: rgba(56,161,105,0.5) !important;
+      background: linear-gradient(135deg, rgba(108,197,81,0.10), rgba(56,161,105,0.10)) !important;
+      border-color: rgba(56,161,105,0.34) !important;
     }
     #${LAUNCHER_WRAP_ID} .broom-fan-chip[data-mode="broom"]:hover {
-      background: linear-gradient(135deg, rgba(124,58,237,0.14), rgba(37,99,235,0.14)) !important;
-      border-color: rgba(37,99,235,0.5) !important;
+      background: linear-gradient(135deg, rgba(124,58,237,0.08), rgba(37,99,235,0.08)) !important;
+      border-color: rgba(37,99,235,0.34) !important;
     }
     @keyframes bsweep-launcher-enter {
       0%   { transform: translateY(-140px) rotate(-25deg) scale(0.6); opacity: 0; }
