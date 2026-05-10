@@ -4,7 +4,6 @@ const hostEl = document.getElementById("host");
 const rulesEl = document.getElementById("rules");
 const pickBtn = document.getElementById("pick");
 const restoreBtn = document.getElementById("restore-toggle");
-const optionsBtn = document.getElementById("options");
 
 render();
 
@@ -25,8 +24,6 @@ restoreBtn.addEventListener("click", async () => {
   });
   window.close();
 });
-
-optionsBtn.addEventListener("click", () => chrome.runtime.openOptionsPage());
 
 async function render() {
   const tab = await getActiveTab();

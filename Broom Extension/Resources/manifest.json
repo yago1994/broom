@@ -9,7 +9,6 @@
     "default_popup": "popup.html",
     "default_title": "Broom"
   },
-  "options_page": "options.html",
   "background": {
     "service_worker": "background.js"
   },
@@ -23,7 +22,7 @@
   ],
   "web_accessible_resources": [
     {
-      "resources": ["magic-swoosh.mp3"],
+      "resources": ["magic-swoosh.m4a"],
       "matches": ["<all_urls>"]
     }
   ]
