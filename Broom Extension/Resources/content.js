@@ -67,6 +67,19 @@ const PLANT_NAMES = {
 };
 
 const SHOVEL_CURSOR_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32"><path d="M22 3 l7 7 -3 3 -2 -2 -10 10 -3 -3 10 -10 -2 -2 z" fill="#caa376" stroke="#5a4424" stroke-width="1.4" stroke-linejoin="round"/><path d="M11 17 l-5 5 q-3 3 -1 5 q2 2 5 -1 l5 -5 z" fill="#7e8a96" stroke="#3a4047" stroke-width="1.4" stroke-linejoin="round"/></svg>`;
+
+// Fertile soil mound with a tiny sprout — shown inside empty plant slots
+// to clearly signal "plantable area" before any plant is placed.
+const SOIL_MOUND_SVG = `<svg viewBox="0 0 100 60" preserveAspectRatio="xMidYMax meet" aria-hidden="true">
+  <ellipse cx="50" cy="56" rx="42" ry="6" fill="#2a1c10" opacity="0.22"/>
+  <path d="M10 52 Q22 28 50 24 Q78 28 90 52 Q70 58 50 58 Q30 58 10 52 Z" fill="#6b4423"/>
+  <path d="M14 50 Q26 32 50 28 Q74 32 86 50 Q70 46 50 44 Q30 46 14 50 Z" fill="#825330"/>
+  <g fill="#4a2f1a"><circle cx="28" cy="44" r="2.2"/><circle cx="40" cy="36" r="1.6"/><circle cx="60" cy="34" r="1.8"/><circle cx="72" cy="42" r="2"/><circle cx="50" cy="42" r="1.6"/><circle cx="34" cy="50" r="1.4"/><circle cx="66" cy="50" r="1.4"/></g>
+  <g fill="#9a6b3e"><circle cx="22" cy="48" r="1"/><circle cx="46" cy="32" r="1"/><circle cx="68" cy="38" r="1"/><circle cx="80" cy="48" r="1"/></g>
+  <g stroke="#3a7a3f" stroke-width="1.4" fill="none" stroke-linecap="round"><path d="M50 28 Q50 18 50 12"/></g>
+  <path d="M50 18 q-7 -4 -10 -10 q4 -1 10 4 z" fill="#5db867" stroke="#2e6b35" stroke-width="0.8"/>
+  <path d="M50 14 q7 -3 10 -8 q-3 -1 -10 4 z" fill="#7bd180" stroke="#2e6b35" stroke-width="0.8"/>
+</svg>`;
 const SHOVEL_CURSOR_DATA_URL = `url('data:image/svg+xml;utf8,${encodeURIComponent(SHOVEL_CURSOR_SVG)}') 6 26, pointer`;
 
 function randomFrom(arr) { return arr[Math.floor(Math.random() * arr.length)]; }
@@ -683,53 +696,81 @@ function pickerStylesheet(cursorValue) {
     /* ── Empty plant slot (visible in plant mode) ─── */
     .broom-empty-slot {
       display: inline-flex !important;
-      align-items: center !important;
+      align-items: flex-end !important;
       justify-content: center !important;
       box-sizing: border-box !important;
       vertical-align: top !important;
       margin: 4px 0 !important;
       border-radius: 14px !important;
-      outline: 2px dashed rgba(80,160,100,0.0) !important;
+      outline: 2px dashed rgba(80,160,100,0.35) !important;
       outline-offset: -4px !important;
-      background: rgba(80,160,100,0.04) !important;
+      background: rgba(80,160,100,0.06) !important;
       cursor: ${SHOVEL_CURSOR_DATA_URL} !important;
       transition: outline-color 160ms ease, background 160ms ease, transform 160ms ease, box-shadow 160ms ease !important;
       animation: broom-slot-breathe 3.2s ease-in-out infinite !important;
       position: relative !important;
-      overflow: hidden !important;
+      overflow: visible !important;
     }
     .broom-empty-slot:hover, .broom-empty-slot:focus-visible {
-      outline-color: rgba(80,160,100,0.7) !important;
-      background: rgba(80,160,100,0.10) !important;
+      outline-color: rgba(80,160,100,0.85) !important;
+      background: rgba(80,160,100,0.12) !important;
       box-shadow: 0 6px 20px rgba(56,161,105,0.18) !important;
       transform: translateY(-1px) !important;
     }
     .broom-empty-slot:focus-visible { outline-style: solid !important; }
+    .broom-empty-slot-soil {
+      position: absolute !important;
+      left: 50% !important;
+      bottom: 8% !important;
+      transform: translateX(-50%) !important;
+      width: clamp(40px, 60%, 110px) !important;
+      max-height: 70% !important;
+      pointer-events: none !important;
+      filter: drop-shadow(0 3px 4px rgba(74,47,26,0.32)) !important;
+      animation: broom-soil-bob 4.8s ease-in-out infinite !important;
+    }
+    .broom-empty-slot-soil svg { display: block !important; width: 100% !important; height: auto !important; }
+    .broom-empty-slot:hover .broom-empty-slot-soil,
+    .broom-empty-slot:focus-visible .broom-empty-slot-soil {
+      animation: broom-soil-wiggle 0.9s ease-in-out infinite !important;
+    }
+    @keyframes broom-soil-bob {
+      0%, 100% { transform: translate(-50%, 0); }
+      50%      { transform: translate(-50%, -2px); }
+    }
+    @keyframes broom-soil-wiggle {
+      0%, 100% { transform: translate(-50%, 0) rotate(-1.2deg); }
+      50%      { transform: translate(-50%, -3px) rotate(1.2deg); }
+    }
     .broom-empty-slot-label {
+      position: absolute !important;
+      top: 8px !important;
+      left: 50% !important;
+      transform: translateX(-50%) translateY(4px) !important;
       display: inline-flex !important;
       align-items: center !important;
       gap: 6px !important;
       padding: 5px 12px !important;
       border-radius: 999px !important;
-      background: rgba(56,161,105,0.92) !important;
+      background: rgba(56,161,105,0.95) !important;
       color: #fff !important;
       font: 600 12px/1 -apple-system, system-ui, sans-serif !important;
       letter-spacing: 0.01em !important;
       box-shadow: 0 4px 12px rgba(56,161,105,0.3) !important;
       opacity: 0 !important;
-      transform: translateY(4px) !important;
       transition: opacity 160ms ease, transform 160ms ease !important;
       pointer-events: none !important;
+      white-space: nowrap !important;
     }
     .broom-empty-slot:hover .broom-empty-slot-label,
     .broom-empty-slot:focus-visible .broom-empty-slot-label {
       opacity: 1 !important;
-      transform: translateY(0) !important;
+      transform: translateX(-50%) translateY(0) !important;
     }
     .broom-empty-slot-icon { font-size: 14px !important; }
     @keyframes broom-slot-breathe {
-      0%, 100% { background: rgba(80,160,100,0.04); }
-      50%      { background: rgba(80,160,100,0.10); }
+      0%, 100% { background: rgba(80,160,100,0.06); }
+      50%      { background: rgba(80,160,100,0.14); }
     }
 
     /* ── Planted decoration ──────────────────── */
@@ -845,7 +886,7 @@ function pickerStylesheet(cursorValue) {
       html.bsweep-shake, .bsweep-puff,
       #${PANEL_ID}, #${PANEL_ID}.thinking .bp-btn.primary, #${PANEL_ID}.success,
       #${LAUNCHER_WRAP_ID} .broom-fan-chip,
-      .broom-empty-slot, .broom-empty-slot-label,
+      .broom-empty-slot, .broom-empty-slot-label, .broom-empty-slot-soil,
       .broom-plant, .broom-plant-enter, .broom-plant-anim-gentle-sway,
       #${PLANT_TOAST_ID}, #${PLANT_TOAST_ID}.bpt-leaving {
         animation: none !important;
@@ -1326,6 +1367,11 @@ function createEmptySlot(hideRule) {
   slot.setAttribute("aria-label", "Plant something here");
   slot.style.width = `${w}px`;
   slot.style.height = `${h}px`;
+
+  const soil = document.createElement("div");
+  soil.className = "broom-empty-slot-soil";
+  soil.innerHTML = SOIL_MOUND_SVG;
+  slot.appendChild(soil);
 
   const label = document.createElement("div");
   label.className = "broom-empty-slot-label";
