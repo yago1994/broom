@@ -1,5 +1,4 @@
 const RULES_KEY = "rules";
-const SETTINGS_KEY = "settings";
 
 export async function getRulesMap() {
   const r = await chrome.storage.local.get(RULES_KEY);
@@ -36,28 +35,4 @@ export async function setRuleEnabled(hostname, ruleId, enabled) {
     rule.enabled = enabled;
     await chrome.storage.local.set({ [RULES_KEY]: map });
   }
-}
-
-export async function getSettings() {
-  const r = await chrome.storage.local.get(SETTINGS_KEY);
-  const s = r[SETTINGS_KEY];
-  return {
-    provider: "anthropic",
-    model: s?.model || "claude-sonnet-4-6",
-    apiKey: s?.apiKey || "",
-  };
-}
-
-export async function setSettings(s) {
-  await chrome.storage.local.set({ [SETTINGS_KEY]: s });
-}
-
-export async function exportAll() {
-  const map = await getRulesMap();
-  return JSON.stringify(map, null, 2);
-}
-
-export async function importAll(json) {
-  const parsed = JSON.parse(json);
-  await chrome.storage.local.set({ [RULES_KEY]: parsed });
 }

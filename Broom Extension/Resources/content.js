@@ -202,21 +202,43 @@ function applyPlant(rule, options) {
   if (anchor.parentNode) anchor.parentNode.insertBefore(slot, anchor.nextSibling);
 }
 
+function removeOverlayPlant(ruleId) {
+  const t = plantTracking.get(ruleId);
+  if (t) {
+    t.anchorEl.remove();
+    plantTracking.delete(ruleId);
+  }
+  const escId = ruleId.replace(/"/g, '\\"');
+  document.querySelectorAll(`[${PLANT_OVERLAY_ATTR}="${escId}"]`).forEach((n) => n.remove());
+}
+
+// Plant DOM is three layers:
+//   .broom-plant-frame  — centering wrapper (transform: translate(-50%, 0))
+//   .broom-plant        — sized, animated (sway / pop-in via rotate/scale)
+//   .broom-plant-foliage / .broom-plant-pot — visual content
+// Position (set on the overlay anchor) never collides with animation.
 function renderPlant(props) {
-  const wrapper = document.createElement("div");
+  const frame = document.createElement("div");
+  frame.className = "broom-plant-frame";
+  frame.setAttribute("aria-hidden", "true");
+
+  const plant = document.createElement("div");
   const animClass = props.animation && props.animation !== "none" ? `broom-plant-anim-${props.animation}` : "";
-  wrapper.className = `broom-plant broom-plant-${props.kind} broom-plant-${props.size} broom-plant-pot-${props.pot} ${animClass}`.trim();
-  wrapper.setAttribute("aria-hidden", "true");
+  plant.className = `broom-plant broom-plant-${props.kind} broom-plant-${props.size} broom-plant-pot-${props.pot} ${animClass}`.trim();
+
   const potSvg = POT_SVGS[props.pot] || "";
   const plantSvg = PLANT_SVGS[props.kind] || PLANT_SVGS.pothos;
-  wrapper.innerHTML = `<div class="broom-plant-foliage">${plantSvg}</div>${potSvg ? `<div class="broom-plant-pot">${potSvg}</div>` : ""}`;
-  return wrapper;
+  plant.innerHTML = `<div class="broom-plant-foliage">${plantSvg}</div>${potSvg ? `<div class="broom-plant-pot">${potSvg}</div>` : ""}`;
+
+  frame.appendChild(plant);
+  return frame;
 }
 
 function removeRule(ruleId) {
   styleCache.delete(ruleId);
   rebuildStyleTag();
   document.querySelectorAll(`[${INJECTED_ATTR}="${ruleId.replace(/"/g, '\\"')}"]`).forEach((n) => n.remove());
+  removeOverlayPlant(ruleId);
 }
 
 function applyInject(rule) {
@@ -257,11 +279,25 @@ const OVERLAY_STYLE_ID = "broom-picker-style";
 const HIGHLIGHT_ID = "broom-picker-highlight";
 const PANEL_ID = "broom-panel";
 const LAUNCHER_ID = "broom-launcher";
+const LAUNCHER_WRAP_ID = "broom-launcher-wrap";
 const SWEEP_ID = "broom-sweep";
-const OUR_UI_SELECTOR = `#${PANEL_ID},#${HIGHLIGHT_ID},#${LAUNCHER_ID},[id^="${SWEEP_ID}"]`;
+const UNDO_TOAST_ID = "broom-undo-toast";
+const OUR_UI_SELECTOR = `#${PANEL_ID},#${HIGHLIGHT_ID},#${LAUNCHER_ID},#${LAUNCHER_WRAP_ID},#${UNDO_TOAST_ID},[id^="${SWEEP_ID}"]`;
 
-let activeMode = null; // "broom" | "plant" | null
+let undoToastTimer = null;
+let broomSession = []; // rules swept in the current/most-recent broom session
+
+let activeMode = null; // "broom" | "plant" | "restore" | null
 let pickerTarget = null;
+
+// Restore-mode state
+const RESTORE_OVERLAY_ATTR = "data-broom-restore-for";
+let restoreSuspended = new Map(); // ruleId → suspended hide CSS
+let restoreReposition = null;
+let restoreScrollHandler = null;
+let restoreResizeHandler = null;
+let restoreObserver = null;
+
 let broomCursorDataUrl = null;
 
 // Draw 🧹 onto a canvas and export as a CSS cursor data URL.
@@ -294,15 +330,19 @@ function startMode(mode) {
   const launcher = document.getElementById(LAUNCHER_ID);
   launcher?.classList.add("active");
   launcher?.setAttribute("data-mode", mode);
-  if (launcher) launcher.textContent = mode === "plant" ? "🌱" : "🧹";
+  if (launcher) launcher.textContent = mode === "plant" ? "🌱" : mode === "restore" ? "♻️" : "🧹";
 
   if (mode === "broom") {
+    broomSession = [];
+    hideUndoToast();
     document.documentElement.classList.add("broom-picking");
     ensureHighlight();
     document.addEventListener("mouseover", onOver, true);
     document.addEventListener("click", onClick, true);
   } else if (mode === "plant") {
     renderEmptySlotAffordances();
+  } else if (mode === "restore") {
+    enterRestoreMode();
   }
 }
 
@@ -322,6 +362,8 @@ function stopMode() {
   document.removeEventListener("mouseover", onOver, true);
   document.removeEventListener("click", onClick, true);
   if (prev === "plant") removeEmptySlotAffordances();
+  if (prev === "restore") exitRestoreMode();
+  if (prev === "broom" && broomSession.length > 0) showUndoToast(broomSession.slice());
 }
 
 // Backward-compat aliases (popup still sends CONTENT_START_PICKER → broom mode)
@@ -430,7 +472,6 @@ function pickerStylesheet(cursorValue) {
     }
     #${PANEL_ID} .bp-btn.primary:hover { filter: brightness(1.08); box-shadow: 0 8px 22px rgba(37,99,235,0.36); }
 
-    #${PANEL_ID} .bp-llm { margin-top: 14px; }
     #${PANEL_ID} .bp-label {
       font-size: 11px; font-weight: 600; color: #64748b;
       text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 6px;
@@ -555,8 +596,8 @@ function pickerStylesheet(cursorValue) {
       pointer-events: none !important;
     }
     #${LAUNCHER_WRAP_ID} .broom-fan-chip:hover {
-      box-shadow: 0 10px 24px rgba(15,23,42,0.22), 0 2px 6px rgba(15,23,42,0.10) !important;
-      transform: translateX(0) translateY(-2px) scale(1.04) !important;
+      box-shadow: 0 8px 18px rgba(15,23,42,0.16), 0 2px 5px rgba(15,23,42,0.08) !important;
+      transform: translateX(0) translateY(-1px) scale(1.02) !important;
     }
     #${LAUNCHER_WRAP_ID} .broom-fan-glyph {
       font-size: 18px !important;
@@ -574,13 +615,17 @@ function pickerStylesheet(cursorValue) {
     }
     #${LAUNCHER_WRAP_ID}.broom-fan-open .broom-fan-chip:nth-child(1) { transition-delay: 60ms; }
     #${LAUNCHER_WRAP_ID}.broom-fan-open .broom-fan-chip:nth-child(2) { transition-delay: 0ms; }
+    #${LAUNCHER_WRAP_ID} .broom-fan-chip[data-mode="restore"]:hover {
+      background: linear-gradient(135deg, rgba(14,165,233,0.10), rgba(34,197,94,0.10)) !important;
+      border-color: rgba(14,165,233,0.34) !important;
+    }
     #${LAUNCHER_WRAP_ID} .broom-fan-chip[data-mode="plant"]:hover {
-      background: linear-gradient(135deg, rgba(108,197,81,0.18), rgba(56,161,105,0.18)) !important;
-      border-color: rgba(56,161,105,0.5) !important;
+      background: linear-gradient(135deg, rgba(108,197,81,0.10), rgba(56,161,105,0.10)) !important;
+      border-color: rgba(56,161,105,0.34) !important;
     }
     #${LAUNCHER_WRAP_ID} .broom-fan-chip[data-mode="broom"]:hover {
-      background: linear-gradient(135deg, rgba(124,58,237,0.14), rgba(37,99,235,0.14)) !important;
-      border-color: rgba(37,99,235,0.5) !important;
+      background: linear-gradient(135deg, rgba(124,58,237,0.08), rgba(37,99,235,0.08)) !important;
+      border-color: rgba(37,99,235,0.34) !important;
     }
     @keyframes bsweep-launcher-enter {
       0%   { transform: translateY(-140px) rotate(-25deg) scale(0.6); opacity: 0; }
@@ -920,6 +965,94 @@ function pickerStylesheet(cursorValue) {
       100% { opacity: 0; transform: translateY(8px) scale(0.96); }
     }
 
+    /* ── Undo toast ──────────────────────────── */
+    #${UNDO_TOAST_ID} {
+      all: initial !important;
+      position: fixed !important;
+      bottom: 22px !important;
+      left: 22px !important;
+      z-index: 2147483647 !important;
+      display: inline-flex !important;
+      align-items: center !important;
+      gap: 10px !important;
+      padding: 10px 14px 10px 12px !important;
+      border-radius: 14px !important;
+      background: rgba(15,23,42,0.92) !important;
+      color: #f1f5f9 !important;
+      border: 1px solid rgba(125,151,255,0.4) !important;
+      border-left: 4px solid #7d97ff !important;
+      box-shadow: 0 16px 40px rgba(15,23,42,0.32), 0 2px 8px rgba(15,23,42,0.18) !important;
+      font: 600 13px/1.2 -apple-system, system-ui, sans-serif !important;
+      backdrop-filter: blur(14px) saturate(1.3) !important;
+      -webkit-backdrop-filter: blur(14px) saturate(1.3) !important;
+      animation: broom-toast-in 0.32s cubic-bezier(.34,1.56,.64,1) !important;
+    }
+    #${UNDO_TOAST_ID}.but-leaving {
+      animation: broom-toast-out 0.22s ease-in forwards !important;
+    }
+    #${UNDO_TOAST_ID} .but-icon { font-size: 16px !important; }
+    #${UNDO_TOAST_ID} .but-msg { flex: 1 1 auto !important; color: #f8fafc !important; }
+    #${UNDO_TOAST_ID} .but-btn {
+      all: unset;
+      cursor: pointer;
+      padding: 5px 10px;
+      border-radius: 8px;
+      font: 600 12px/1 -apple-system, system-ui, sans-serif;
+      color: #dbe5ff;
+      background: rgba(125,151,255,0.18);
+      border: 1px solid rgba(125,151,255,0.4);
+      transition: background 0.12s, transform 0.1s;
+    }
+    #${UNDO_TOAST_ID} .but-btn:hover { background: rgba(125,151,255,0.32); }
+    #${UNDO_TOAST_ID} .but-btn:active { transform: scale(0.96); }
+
+    /* ── Restore-mode overlay ────────────────── */
+    .broom-restore-overlay {
+      position: fixed !important;
+      z-index: 2147483646 !important;
+      pointer-events: auto !important;
+      box-sizing: border-box !important;
+      border: 2px dashed rgba(37,99,235,0.85) !important;
+      background: rgba(37,99,235,0.14) !important;
+      border-radius: 6px !important;
+      display: flex !important;
+      align-items: center !important;
+      justify-content: center !important;
+      animation: broom-restore-in 220ms cubic-bezier(.2,1.4,.4,1) both !important;
+      transition: opacity 220ms ease, transform 220ms ease !important;
+    }
+    .broom-restore-overlay.broom-restore-leaving {
+      opacity: 0 !important;
+      transform: scale(0.94) !important;
+    }
+    .broom-restore-plus {
+      all: unset;
+      width: 36px !important;
+      height: 36px !important;
+      border-radius: 50% !important;
+      background: #2563eb !important;
+      color: #fff !important;
+      font: 700 22px/1 -apple-system, system-ui, sans-serif !important;
+      display: inline-flex !important;
+      align-items: center !important;
+      justify-content: center !important;
+      cursor: pointer !important;
+      box-shadow: 0 6px 18px rgba(37,99,235,0.42), 0 0 0 3px rgba(255,255,255,0.9) !important;
+      transition: transform 120ms ease, box-shadow 120ms ease, background 120ms ease !important;
+    }
+    .broom-restore-plus:hover {
+      background: #1d4fd8 !important;
+      transform: scale(1.08) !important;
+    }
+    .broom-restore-plus:active { transform: scale(0.94) !important; }
+    .broom-restore-plus:focus-visible {
+      box-shadow: 0 6px 18px rgba(37,99,235,0.42), 0 0 0 3px #fff, 0 0 0 6px rgba(37,99,235,0.45) !important;
+    }
+    @keyframes broom-restore-in {
+      0%   { opacity: 0; transform: scale(0.96); }
+      100% { opacity: 1; transform: scale(1); }
+    }
+
     /* ── Reduced motion ──────────────────────── */
     @media (prefers-reduced-motion: reduce) {
       #${LAUNCHER_ID}, #${LAUNCHER_ID}.active, #${LAUNCHER_ID}.squash,
@@ -930,6 +1063,8 @@ function pickerStylesheet(cursorValue) {
       #${LAUNCHER_WRAP_ID} .broom-fan-chip,
       .broom-empty-slot, .broom-empty-slot-label, .broom-empty-slot-soil,
       .broom-plant, .broom-plant-enter, .broom-plant-anim-gentle-sway,
+      .broom-restore-overlay, .broom-restore-overlay.broom-restore-leaving, .broom-restore-plus,
+      #${UNDO_TOAST_ID}, #${UNDO_TOAST_ID}.but-leaving,
       #${PLANT_TOAST_ID}, #${PLANT_TOAST_ID}.bpt-leaving {
         animation: none !important;
         transition: none !important;
@@ -953,6 +1088,18 @@ function isOurUI(el) { return !!el?.closest?.(OUR_UI_SELECTOR + ",#broom-tag,.bs
 const SPARKLE_GLYPHS = ["✨", "✦", "✧", "⭐", "💫"];
 
 // Spawn a small burst of sparkles at viewport coords (for clicks/successes).
+function playBroomSound() {
+  try {
+    const url = chrome.runtime.getURL("magic-swoosh.m4a");
+    console.log("[broom] playing sound:", url);
+    const audio = new Audio(url);
+    audio.volume = 0.6;
+    audio.play().catch(e => console.error("[broom] audio play failed:", e));
+  } catch (e) {
+    console.error("[broom] playBroomSound error:", e);
+  }
+}
+
 function spawnSparklePuff(x, y, count = 6, spread = 60) {
   for (let i = 0; i < count; i++) {
     const s = document.createElement("div");
@@ -1085,9 +1232,14 @@ function onClick(e) {
   pickerTarget = resolved.target;
   const target = resolved.target;
   spawnSparklePuff(e.clientX, e.clientY, 6, 50);
-  stopPicker();
-  // Brief pop before opening the panel — acknowledges the click
-  popTargetThen(target, () => openPanel(target));
+  // Stay in brooming mode so multiple elements can be wiped in a row.
+  // Clear the current target/visuals; mouseover will repopulate after the sweep.
+  pickerTarget = null;
+  document.getElementById(HIGHLIGHT_ID)?.style.setProperty("opacity", "0");
+  hideSelectorTag();
+  void playSweepAndHide(target, selector).then(() => {
+    document.getElementById(HIGHLIGHT_ID)?.style.removeProperty("opacity");
+  });
 }
 
 // Global keydown — always active. Esc exits brooming/closes panel.
@@ -1101,6 +1253,7 @@ function globalKeydown(e) {
     return;
   }
   if (e.key === "Enter" && activeMode === "broom" && pickerTarget && !isOurUI(e.target)) {
+    if (e.repeat) return; // ignore key auto-repeat — one wipe per press
     e.preventDefault();
     e.stopPropagation();
     const target = pickerTarget;
@@ -1113,14 +1266,18 @@ function globalKeydown(e) {
       return;
     }
     const selector = buildSelector(target);
-    stopPicker();
-    void playSweepAndHide(target, selector);
+    // Stay in brooming mode so the user can wipe multiple elements in a row.
+    // Just clear the current target + visuals; the next mouseover repopulates.
+    pickerTarget = null;
+    document.getElementById(HIGHLIGHT_ID)?.style.setProperty("opacity", "0");
+    hideSelectorTag();
+    void playSweepAndHide(target, selector).then(() => {
+      document.getElementById(HIGHLIGHT_ID)?.style.removeProperty("opacity");
+    });
   }
 }
 
 // ── Always-present launcher ───────────────────────────────────────────────────
-
-const LAUNCHER_WRAP_ID = "broom-launcher-wrap";
 
 function installLauncher() {
   if (document.getElementById(LAUNCHER_WRAP_ID)) return;
@@ -1132,6 +1289,10 @@ function installLauncher() {
   const fan = document.createElement("div");
   fan.className = "broom-fan";
   fan.innerHTML = `
+    <button class="broom-fan-chip" data-mode="restore" type="button" aria-label="Restore mode">
+      <span class="broom-fan-glyph">♻️</span>
+      <span class="broom-fan-label">Restore</span>
+    </button>
     <button class="broom-fan-chip" data-mode="plant" type="button" aria-label="Plant mode">
       <span class="broom-fan-glyph">🌱</span>
       <span class="broom-fan-label">Plant</span>
@@ -1223,6 +1384,8 @@ async function playSweepAndHide(el, selector) {
     return;
   }
 
+  playBroomSound();
+
   const overlay = document.createElement("div");
   overlay.id = `${SWEEP_ID}-${Date.now()}`;
   overlay.className = SWEEP_ID;
@@ -1290,7 +1453,6 @@ async function playSweepAndHide(el, selector) {
     const cx = rect.left + rect.width * 0.2;
     const cy = rect.top + rect.height / 2;
     spawnSparklePuff(cx, cy, 10, Math.max(60, rect.width * 0.4));
-    screenShake();
   }, 760);
 
   await new Promise((r) => setTimeout(r, 950));
@@ -1299,6 +1461,8 @@ async function playSweepAndHide(el, selector) {
   const rule = makeHideRule(selector, { width: rect.width, height: rect.height });
   await upsertRuleLocal(rule);
   applyRule(rule);
+
+  broomSession.push(rule);
 
   // Cleanup overlay; restore element styles in case the rule was rejected.
   overlay.remove();
@@ -1418,28 +1582,10 @@ function openPanel(el) {
     <div class="bp-sel"></div>
     <div class="bp-actions">
       <button class="bp-btn primary" data-type="hide">Hide</button>
-      <button class="bp-btn" data-type="restyle">Restyle…</button>
-      <button class="bp-btn" data-type="inject">Inject…</button>
-    </div>
-    <div class="bp-llm" id="broom-llm" style="display:none">
-      <div class="bp-label" id="broom-llm-label">Describe the change</div>
-      <textarea id="broom-instruction" placeholder="e.g. make the font larger and blue, remove the sidebar…"></textarea>
-      <div class="bp-submit-row">
-        <button class="bp-btn primary" id="broom-submit">Generate</button>
-        <span class="bp-status" id="broom-status"></span>
-      </div>
-      <div class="bp-err" id="broom-err" style="display:none"></div>
     </div>`;
 
   panel.querySelector(".bp-sel").textContent = selector;
   document.documentElement.appendChild(panel);
-
-  const llmBox = panel.querySelector("#broom-llm");
-  const llmLabel = panel.querySelector("#broom-llm-label");
-  const instruction = panel.querySelector("#broom-instruction");
-  const statusEl = panel.querySelector("#broom-status");
-  const errEl = panel.querySelector("#broom-err");
-  let pendingType = null;
 
   panel.querySelectorAll("button[data-type]").forEach((btn) => {
     btn.addEventListener("click", async () => {
@@ -1447,49 +1593,11 @@ function openPanel(el) {
       if (t === "hide") {
         closePanel();
         await playSweepAndHide(el, selector);
-        return;
       }
-      pendingType = t;
-      const labels = { restyle: "Describe the style change", inject: "What text should appear?" };
-      llmLabel.textContent = labels[t] || "Describe the change";
-      llmBox.style.display = "block";
-      instruction.focus();
     });
   });
 
   panel.querySelector("#broom-cancel").addEventListener("click", closePanel);
-
-  panel.querySelector("#broom-submit").addEventListener("click", async () => {
-    errEl.style.display = "none";
-    statusEl.textContent = "Thinking…";
-    panel.classList.add("thinking");
-    try {
-      const res = await chrome.runtime.sendMessage({
-        type: "BG_GENERATE_RULE",
-        instruction: instruction.value,
-        ruleType: pendingType,
-        element: collectContext(el, selector),
-        hostname: location.hostname,
-      });
-      if (!res?.ok) throw new Error(res?.error || "Unknown error");
-      if (!safeQueryAll(res.rule.selector.primary).length) throw new Error(`Selector matched nothing: ${res.rule.selector.primary}`);
-      applyRule(res.rule);
-      // Success feedback: panel glows green, target sparkles, then close
-      panel.classList.remove("thinking");
-      panel.classList.add("success");
-      const targetEl = safeQueryAll(res.rule.selector.primary)[0];
-      if (targetEl) {
-        const tr = targetEl.getBoundingClientRect();
-        spawnSparklePuff(tr.left + tr.width / 2, tr.top + tr.height / 2, 8, 60);
-      }
-      setTimeout(() => closePanel(), 480);
-    } catch (e) {
-      panel.classList.remove("thinking");
-      errEl.textContent = e.message;
-      errEl.style.display = "block";
-      statusEl.textContent = "";
-    }
-  });
 }
 
 function closePanel() { document.getElementById(PANEL_ID)?.remove(); }
@@ -1501,20 +1609,6 @@ function makeHideRule(selector, originalBox) {
   }
   return { id: uuid(), hostname: location.hostname, type: "hide", selector: { primary: selector, fallbacks: [], semantic: "" }, payload, enabled: true, createdAt: Date.now(), lastAppliedAt: null, lastFailedAt: null, failCount: 0 };
 }
-
-function collectContext(el, selectorGuess) {
-  return {
-    outerHTML: el.outerHTML.slice(0, 2048),
-    tagName: el.tagName.toLowerCase(),
-    id: el.id || null,
-    classes: Array.from(el.classList),
-    selectorGuess,
-    parentSelectorGuess: el.parentElement ? buildSelector(el.parentElement) : null,
-    textSnippet: (el.textContent || "").trim().slice(0, 200),
-  };
-}
-
-function safeQueryAll(sel) { try { return Array.from(document.querySelectorAll(sel)); } catch { return []; } }
 
 // ── Planting: empty slot affordances + click handler + toast ─────────────────
 
@@ -1551,6 +1645,135 @@ function renderEmptySlotAffordances() {
 
 function removeEmptySlotAffordances() {
   document.querySelectorAll(`[${EMPTY_SLOT_ATTR}]`).forEach((n) => n.remove());
+}
+
+// ── Restore mode ─────────────────────────────────────────────────────────────
+
+function enterRestoreMode() {
+  restoreSuspended = new Map();
+  for (const rule of appliedRules) {
+    if (rule.payload && rule.payload.kind === "hide" && rule.enabled && styleCache.has(rule.id)) {
+      restoreSuspended.set(rule.id, styleCache.get(rule.id));
+      styleCache.delete(rule.id);
+    }
+  }
+  rebuildStyleTag();
+  // Let layout settle before measuring positions.
+  requestAnimationFrame(() => renderRestoreOverlays());
+
+  restoreReposition = rafDebounce(repositionRestoreOverlays);
+  restoreScrollHandler = restoreReposition;
+  restoreResizeHandler = restoreReposition;
+  window.addEventListener("scroll", restoreScrollHandler, { capture: true, passive: true });
+  window.addEventListener("resize", restoreResizeHandler, { passive: true });
+  restoreObserver = new MutationObserver(restoreReposition);
+  if (document.body) restoreObserver.observe(document.body, { childList: true, subtree: true, attributes: true });
+}
+
+function exitRestoreMode() {
+  removeRestoreOverlays();
+  if (restoreScrollHandler) window.removeEventListener("scroll", restoreScrollHandler, { capture: true });
+  if (restoreResizeHandler) window.removeEventListener("resize", restoreResizeHandler);
+  if (restoreObserver) restoreObserver.disconnect();
+  restoreScrollHandler = null;
+  restoreResizeHandler = null;
+  restoreObserver = null;
+  restoreReposition = null;
+
+  // Re-apply any hide rules that were suspended (and not deleted via +).
+  for (const [ruleId, css] of restoreSuspended) {
+    styleCache.set(ruleId, css);
+  }
+  rebuildStyleTag();
+  restoreSuspended = new Map();
+}
+
+function rafDebounce(fn) {
+  let queued = false;
+  return function () {
+    if (queued) return;
+    queued = true;
+    requestAnimationFrame(() => {
+      queued = false;
+      fn();
+    });
+  };
+}
+
+function renderRestoreOverlays() {
+  removeRestoreOverlays();
+  for (const rule of appliedRules) {
+    if (!restoreSuspended.has(rule.id)) continue;
+    const el = resolveSelector(rule.selector.primary, rule.selector.fallbacks);
+    if (!el) continue;
+    const overlay = createRestoreOverlay(rule);
+    document.documentElement.appendChild(overlay);
+    positionRestoreOverlay(overlay, el);
+  }
+}
+
+function createRestoreOverlay(rule) {
+  const overlay = document.createElement("div");
+  overlay.className = "broom-restore-overlay";
+  overlay.setAttribute(RESTORE_OVERLAY_ATTR, rule.id);
+
+  const plus = document.createElement("button");
+  plus.type = "button";
+  plus.className = "broom-restore-plus";
+  plus.setAttribute("aria-label", "Restore this element");
+  plus.textContent = "＋";
+  plus.addEventListener("click", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    void onRestorePlusClick(rule, overlay, e);
+  });
+
+  overlay.appendChild(plus);
+  return overlay;
+}
+
+function positionRestoreOverlay(overlay, el) {
+  const r = el.getBoundingClientRect();
+  if (r.width === 0 && r.height === 0) {
+    overlay.style.display = "none";
+    return;
+  }
+  overlay.style.display = "";
+  overlay.style.top = `${r.top}px`;
+  overlay.style.left = `${r.left}px`;
+  overlay.style.width = `${r.width}px`;
+  overlay.style.height = `${r.height}px`;
+}
+
+function repositionRestoreOverlays() {
+  document.querySelectorAll(`.broom-restore-overlay[${RESTORE_OVERLAY_ATTR}]`).forEach((overlay) => {
+    const ruleId = overlay.getAttribute(RESTORE_OVERLAY_ATTR);
+    const rule = appliedRules.find((r) => r.id === ruleId);
+    if (!rule) { overlay.remove(); return; }
+    const el = resolveSelector(rule.selector.primary, rule.selector.fallbacks);
+    if (!el) { overlay.remove(); return; }
+    positionRestoreOverlay(overlay, el);
+  });
+}
+
+function removeRestoreOverlays() {
+  document.querySelectorAll(`.broom-restore-overlay[${RESTORE_OVERLAY_ATTR}]`).forEach((n) => n.remove());
+}
+
+async function onRestorePlusClick(rule, overlay, evt) {
+  // Drop from suspended map so it stays visible after exiting restore mode.
+  restoreSuspended.delete(rule.id);
+  appliedRules = appliedRules.filter((r) => r.id !== rule.id);
+  styleCache.delete(rule.id);
+  rebuildStyleTag();
+
+  if (evt && typeof evt.clientX === "number") {
+    spawnSparklePuff(evt.clientX, evt.clientY, 6, 50);
+  }
+  overlay.classList.add("broom-restore-leaving");
+  setTimeout(() => overlay.remove(), 220);
+
+  await deleteRuleLocal(rule.hostname, rule.id);
 }
 
 function createEmptySlot(hideRule) {
@@ -1629,6 +1852,60 @@ function makePlantRule(hideRule, plant) {
     lastFailedAt: null,
     failCount: 0
   };
+}
+
+// ── Undo toast (revive the just-swept element) ──────────────────────────────
+
+function showUndoToast(rules) {
+  hideUndoToast();
+  if (!rules.length) return;
+  const count = rules.length;
+  const label = count === 1 ? "Swept" : `Swept ${count}`;
+  const toast = document.createElement("div");
+  toast.id = UNDO_TOAST_ID;
+  toast.innerHTML = `
+    <span class="but-icon">🧹</span>
+    <span class="but-msg">${label}</span>
+    <button class="but-btn" data-act="undo" type="button">Undo</button>
+  `;
+  document.documentElement.appendChild(toast);
+
+  toast.querySelector('[data-act="undo"]').addEventListener("click", async (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    hideUndoToast();
+    const ids = new Set(rules.map((r) => r.id));
+    appliedRules = appliedRules.filter((r) => !ids.has(r.id));
+    for (const r of rules) styleCache.delete(r.id);
+    rebuildStyleTag();
+    for (const r of rules) {
+      document.querySelectorAll(`.broom-restore-overlay[${RESTORE_OVERLAY_ATTR}="${r.id.replace(/"/g, '\\"')}"]`).forEach((n) => n.remove());
+    }
+    if (count === 1) {
+      spawnSparklePuff(window.innerWidth / 2, window.innerHeight / 2, 8, 80);
+    }
+    for (const r of rules) {
+      try { await deleteRuleLocal(r.hostname, r.id); } catch { /* best-effort */ }
+    }
+  });
+
+  toast.addEventListener("mouseenter", () => clearTimeout(undoToastTimer));
+  toast.addEventListener("mouseleave", armUndoToastDismiss);
+  armUndoToastDismiss();
+}
+
+function armUndoToastDismiss() {
+  clearTimeout(undoToastTimer);
+  undoToastTimer = setTimeout(hideUndoToast, 6000);
+}
+
+function hideUndoToast() {
+  clearTimeout(undoToastTimer);
+  undoToastTimer = null;
+  const toast = document.getElementById(UNDO_TOAST_ID);
+  if (!toast) return;
+  toast.classList.add("but-leaving");
+  setTimeout(() => toast.remove(), 220);
 }
 
 const PLANT_TOAST_ID = "broom-plant-toast";
@@ -1739,6 +2016,7 @@ function onMutate() {
     if (r.payload.kind === "inject" || r.payload.kind === "plant") applyRule(r);
   }
   if (activeMode === "plant") renderEmptySlotAffordances();
+  schedulePlantPositionUpdate();
 }
 
 async function refreshRules() {
@@ -1753,6 +2031,13 @@ async function refreshRules() {
 
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg?.type === "CONTENT_START_PICKER") { startPicker(); sendResponse({ type: "ACK" }); return true; }
+  if (msg?.type === "CONTENT_TOGGLE_MODE") {
+    const m = msg.mode;
+    if (activeMode === m) stopMode();
+    else startMode(m);
+    sendResponse({ type: "ACK" });
+    return true;
+  }
   if (msg?.type === "CONTENT_APPLY_RULE") { applyRule(msg.rule); void refreshRules(); sendResponse({ type: "ACK" }); return true; }
   if (msg?.type === "CONTENT_REMOVE_RULE") { removeRule(msg.ruleId); void refreshRules(); sendResponse({ type: "ACK" }); return true; }
   return false;
