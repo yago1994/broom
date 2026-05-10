@@ -50,7 +50,7 @@ async function clearRulesForHost(hostname) {
 // ── Prefs (sound on/off, etc.) ───────────────────────────────────────────────
 
 const PREFS_KEY = "prefs";
-const DEFAULT_PREFS = { soundEnabled: true };
+const DEFAULT_PREFS = { soundEnabled: true, showChanges: true };
 let cachedPrefs = { ...DEFAULT_PREFS };
 
 async function loadPrefs() {
@@ -64,6 +64,15 @@ async function loadPrefs() {
 async function setPref(key, value) {
   cachedPrefs = { ...cachedPrefs, [key]: value };
   await chrome.storage.local.set({ [PREFS_KEY]: cachedPrefs });
+}
+
+function getVersionAndBuild() {
+  const raw = chrome.runtime?.getManifest?.()?.version || "0";
+  const parts = String(raw).split(".");
+  const build = parts.length >= 4 ? parts[3] : "1";
+  let head = parts.slice(0, Math.min(3, parts.length));
+  while (head.length > 2 && head[head.length - 1] === "0") head.pop();
+  return { version: head.join("."), build };
 }
 
 // Plant catalog (POT_SVGS, PLANT_SVGS, PLANT_NAMES) is defined in lib/plants.js
@@ -89,9 +98,9 @@ function randomFrom(arr) { return arr[Math.floor(Math.random() * arr.length)]; }
 function chooseRandomPlant(hideRule) {
   const box = (hideRule.payload && hideRule.payload.originalBox) || { width: 120, height: 120 };
   const h = box.height;
-  const small = ["succulent", "fern", "snake-plant", "cactus", "aloe", "lavender"];
-  const medium = ["pothos", "fern", "snake-plant", "monstera", "cactus", "aloe", "peace-lily", "calathea", "orchid", "zz-plant"];
-  const large = ["bird-of-paradise", "monstera", "pothos", "bamboo", "palm", "fiddle-leaf", "orchid", "zz-plant"];
+  const small = ["succulent", "fern", "snake-plant", "cactus", "aloe", "lavender", "pine", "tulips", "topiary", "air-plant"];
+  const medium = ["pothos", "fern", "snake-plant", "monstera", "cactus", "aloe", "peace-lily", "calathea", "orchid", "zz-plant", "spider-plant", "cherry-blossom", "eucalyptus", "tulips", "sunflower", "topiary", "string-of-pearls"];
+  const large = ["bird-of-paradise", "monstera", "pothos", "bamboo", "palm", "fiddle-leaf", "orchid", "zz-plant", "spider-plant", "pampas", "cherry-blossom", "eucalyptus", "sunflower"];
   const pool = h < 90 ? small : h > 180 ? large : medium;
   return {
     kind: randomFrom(pool),
@@ -154,6 +163,7 @@ function rebuildStyleTag() {
 
 function applyRule(rule, options) {
   if (!rule.enabled) { removeRule(rule.id); return; }
+  if (cachedPrefs.showChanges === false) { removeRule(rule.id); return; }
   const { kind } = rule.payload;
   if (kind === "hide") {
     styleCache.set(rule.id, `${rule.selector.primary} { display: none !important; }`);
@@ -220,20 +230,90 @@ function applyPlant(rule, options) {
   slot.addEventListener("mouseenter", () => {
     if (document.documentElement.dataset.broomMode === "broom") return;
     if (plant.classList.contains("broom-plant-enter")) return;
-    plant.classList.remove("broom-plant-wiggling");
+    plant.classList.remove("broom-plant-hovering");
     void plant.offsetWidth;
-    plant.classList.add("broom-plant-wiggling");
+    plant.classList.add("broom-plant-hovering");
+  });
+  slot.addEventListener("mouseleave", () => {
+    plant.classList.remove("broom-plant-hovering");
+  });
+  slot.addEventListener("click", (e) => {
+    if (activeMode !== null) return;
+    if (plant.classList.contains("broom-plant-enter")) return;
+    spawnRaindrop(slot, plant, e);
   });
   plant.addEventListener("animationend", (e) => {
     if (e.animationName === "broom-plant-popin") {
       plant.classList.remove("broom-plant-enter");
     }
-    if (e.animationName === "broom-plant-wiggle") {
-      plant.classList.remove("broom-plant-wiggling");
-    }
   });
 
   if (anchor.parentNode) anchor.parentNode.insertBefore(slot, anchor.nextSibling);
+}
+
+const RAINDROP_SVG = `<svg viewBox="0 0 12 18" aria-hidden="true"><path d="M6 1 Q11 9 11 13 Q11 17 6 17 Q1 17 1 13 Q1 9 6 1 Z" fill="#5aa8e8" stroke="#3a78b8" stroke-width="0.8"/><ellipse cx="4" cy="6" rx="1.2" ry="2" fill="#a8d4f0" opacity="0.7"/></svg>`;
+
+function spawnRaindrop(slot, plant, event) {
+  const rect = slot.getBoundingClientRect();
+  const clickX = event && typeof event.clientX === "number"
+    ? Math.max(8, Math.min(rect.width - 8, event.clientX - rect.left))
+    : rect.width / 2;
+  const foliage = plant.querySelector(".broom-plant-foliage");
+  const pot = plant.querySelector(".broom-plant-pot");
+  const hasPot = !plant.classList.contains("broom-plant-pot-none") && pot;
+  let landingY;
+  if (hasPot) {
+    // Land 6px above the top of the pot
+    const potRect = pot.getBoundingClientRect();
+    landingY = (potRect.top - rect.top) - 6;
+  } else {
+    // No pot: land 12px above the bottom of the foliage
+    const foliageRect = foliage ? foliage.getBoundingClientRect() : rect;
+    landingY = (foliageRect.top - rect.top) + foliageRect.height - 12;
+  }
+
+  const drop = document.createElement("span");
+  drop.className = "broom-raindrop";
+  drop.innerHTML = RAINDROP_SVG;
+  drop.style.cssText = `left:${clickX}px;--fall-y:${landingY}px`;
+  slot.appendChild(drop);
+
+  try {
+    const audio = new Audio(chrome.runtime.getURL("pop.mp3"));
+    audio.volume = 0.3;
+    audio.playbackRate = 1.4;
+    if (cachedPrefs.soundEnabled !== false) audio.play().catch(() => {});
+  } catch (_) {}
+
+  drop.addEventListener("animationend", () => {
+    drop.remove();
+    if (foliage) {
+      foliage.classList.remove("broom-plant-watered");
+      void foliage.offsetWidth;
+      foliage.classList.add("broom-plant-watered");
+    }
+    [
+      { px: -10, py: -4, dur: 420, delay: 0 },
+      { px:  -4, py: -8, dur: 460, delay: 30 },
+      { px:   4, py: -8, dur: 460, delay: 20 },
+      { px:  10, py: -4, dur: 420, delay: 40 },
+    ].forEach(({ px, py, dur, delay }) => {
+      const s = document.createElement("span");
+      s.className = "broom-plant-particle broom-plant-splash";
+      s.style.cssText = `left:${clickX}px;bottom:auto;top:${landingY}px;--px:${px}px;--py:${py}px;background:#7ab8e8;--dur:${dur}ms;--delay:${delay}ms`;
+      slot.appendChild(s);
+      s.addEventListener("animationend", () => s.remove(), { once: true });
+    });
+  }, { once: true });
+
+  if (foliage) {
+    foliage.addEventListener("animationend", function onWater(e) {
+      if (e.animationName === "broom-plant-wiggle") {
+        foliage.classList.remove("broom-plant-watered");
+        foliage.removeEventListener("animationend", onWater);
+      }
+    });
+  }
 }
 
 function renderPlant(props) {
@@ -386,16 +466,16 @@ function pickerStylesheet() {
       top: 0 !important; left: 0 !important;
       pointer-events: none !important;
       z-index: 2147483646 !important;
-      width: 44px !important; height: 44px !important;
+      width: 64px !important; height: 64px !important;
       will-change: transform;
       transform: translate3d(-100px, -100px, 0);
     }
     #${BROOM_CURSOR_ID} .broom-cursor-glyph {
       display: block;
-      width: 44px; height: 44px;
-      font: 40px/44px "Apple Color Emoji", "Segoe UI Emoji", serif;
+      width: 64px; height: 64px;
+      font: 60px/64px "Apple Color Emoji", "Segoe UI Emoji", serif;
       text-align: center;
-      transform-origin: 4px 40px;
+      transform-origin: 6px 58px;
       transform: rotate(0deg);
       will-change: transform;
     }
@@ -573,22 +653,22 @@ function pickerStylesheet() {
     #${LAUNCHER_ID}:active { transform: scale(0.92) rotate(-12deg) !important; }
     #${LAUNCHER_ID}.squash { animation: bsweep-launcher-squash 0.32s cubic-bezier(.34,1.56,.64,1) !important; }
     #${LAUNCHER_ID}.active {
-      background: linear-gradient(135deg, rgba(37,99,235,0.78), rgba(124,58,237,0.78)) !important;
+      background: linear-gradient(135deg, rgba(37,99,235,0.58), rgba(124,58,237,0.58)) !important;
       border-color: rgba(255,255,255,0.34) !important;
-      box-shadow: 0 10px 24px rgba(37,99,235,0.26) !important;
+      box-shadow: 0 10px 22px rgba(37,99,235,0.18) !important;
       animation: bsweep-launcher-wiggle 0.7s ease-in-out infinite alternate !important;
     }
     #${LAUNCHER_ID}[data-mode="plant"] {
-      background: linear-gradient(135deg, rgba(56,161,105,0.78), rgba(108,197,81,0.78)) !important;
-      box-shadow: 0 10px 24px rgba(56,161,105,0.26) !important;
+      background: linear-gradient(135deg, rgba(56,161,105,0.58), rgba(108,197,81,0.58)) !important;
+      box-shadow: 0 10px 22px rgba(56,161,105,0.18) !important;
     }
     #${LAUNCHER_ID}[data-mode="restore"] {
-      background: linear-gradient(135deg, rgba(20,184,166,0.78), rgba(14,165,233,0.78)) !important;
-      box-shadow: 0 10px 24px rgba(14,165,233,0.24) !important;
+      background: linear-gradient(135deg, rgba(20,184,166,0.58), rgba(14,165,233,0.58)) !important;
+      box-shadow: 0 10px 22px rgba(14,165,233,0.17) !important;
     }
     #${LAUNCHER_ID}[data-mode="broom"] {
-      background: linear-gradient(135deg, rgba(37,99,235,0.78), rgba(124,58,237,0.78)) !important;
-      box-shadow: 0 10px 24px rgba(37,99,235,0.26) !important;
+      background: linear-gradient(135deg, rgba(37,99,235,0.58), rgba(124,58,237,0.58)) !important;
+      box-shadow: 0 10px 22px rgba(37,99,235,0.18) !important;
     }
 
     /* ── Hover fan menu ──────────────────────── */
@@ -690,12 +770,12 @@ function pickerStylesheet() {
     @keyframes bsweep-settings-out {
       to { opacity: 0; transform: translateY(6px) scale(0.96); }
     }
-    #${SETTINGS_ID} .bs-title {
-      font: 700 12px/1 -apple-system, system-ui, sans-serif !important;
-      letter-spacing: 0.04em !important;
-      text-transform: uppercase !important;
-      color: #64748b !important;
-      margin: 0 0 10px 2px !important;
+    #${SETTINGS_ID} .bs-version {
+      font: 500 11px/1 -apple-system, system-ui, sans-serif !important;
+      color: #94a3b8 !important;
+      text-align: center !important;
+      margin: 10px 0 2px !important;
+      letter-spacing: 0.02em !important;
     }
     #${SETTINGS_ID} .bs-row {
       display: flex !important;
@@ -856,21 +936,11 @@ function pickerStylesheet() {
     /* ── Sweep animation ─────────────────────── */
     .${SWEEP_ID} { contain: layout style; }
     .${SWEEP_ID} .bsweep-broom {
-      animation: bsweep-broom 0.95s cubic-bezier(.45,.05,.55,.95) forwards;
       filter: drop-shadow(0 4px 8px rgba(37,99,235,0.35));
     }
     .${SWEEP_ID} .bsweep-sparkle {
       will-change: transform, opacity;
       filter: drop-shadow(0 0 6px rgba(250,204,21,0.7));
-    }
-    @keyframes bsweep-broom {
-      0%   { transform: translate(120%, -50%) rotate(35deg);   opacity: 0; }
-      8%   { transform: translate(110%, -50%) rotate(35deg);   opacity: 1; }
-      30%  { transform: translate(70%, -55%) rotate(-15deg); }
-      52%  { transform: translate(40%, -45%) rotate(28deg); }
-      72%  { transform: translate(10%, -55%) rotate(-18deg); }
-      90%  { transform: translate(-30%, -50%) rotate(25deg);  opacity: 1; }
-      100% { transform: translate(-130%, -50%) rotate(40deg); opacity: 0; }
     }
     @keyframes bsweep-sparkle {
       0%   { opacity: 0; transform: translate(-50%, -50%) scale(0.3) rotate(0deg); }
@@ -1074,9 +1144,16 @@ function pickerStylesheet() {
       72%  { transform: rotate(1.8deg); }
       100% { transform: rotate(0deg); }
     }
-    /* Wiggle targets foliage only — pot stays still */
-    .broom-plant-wiggling .broom-plant-foliage {
-      animation: broom-plant-wiggle 680ms ease-out, broom-plant-sway 5.5s ease-in-out infinite 680ms !important;
+    /* Hover: foliage gets a sharp wiggle "snap" then continuous strong sway */
+    .broom-plant-hovering .broom-plant-foliage {
+      animation:
+        broom-plant-wiggle 680ms ease-out,
+        broom-plant-hover-sway 0.8s ease-in-out infinite 680ms !important;
+    }
+    @keyframes broom-plant-hover-sway {
+      0%   { transform: rotate(-5deg) scale(1.04); }
+      50%  { transform: rotate(5deg)  scale(1.04); }
+      100% { transform: rotate(-5deg) scale(1.04); }
     }
     @keyframes broom-particle-burst {
       0%   { opacity: 1; transform: translate(0, 0) scale(1.2); }
@@ -1093,6 +1170,33 @@ function pickerStylesheet() {
       margin-left: -2.5px !important;
       margin-bottom: -2.5px !important;
       animation: broom-particle-burst var(--dur, 480ms) ease-out var(--delay, 0ms) both !important;
+    }
+    .broom-plant-splash {
+      box-shadow: 0 0 4px rgba(90,168,232,0.6) !important;
+    }
+    /* Raindrop: falls from above the plant onto the foliage on click */
+    .broom-raindrop {
+      position: absolute !important;
+      top: 0 !important;
+      width: 10px !important;
+      height: 16px !important;
+      margin-left: -5px !important;
+      pointer-events: none !important;
+      transform: translateY(-30px) scaleY(1);
+      filter: drop-shadow(0 1px 1px rgba(58,120,184,0.4));
+      animation: broom-raindrop-fall 520ms cubic-bezier(.45,.05,.55,.95) forwards !important;
+    }
+    .broom-raindrop svg { display: block; width: 100%; height: 100%; }
+    @keyframes broom-raindrop-fall {
+      0%   { transform: translateY(-30px) scaleY(1)    scaleX(1); opacity: 0; }
+      15%  { opacity: 1; }
+      85%  { transform: translateY(calc(var(--fall-y, 50px) - 4px)) scaleY(1.15) scaleX(0.9); opacity: 1; }
+      96%  { transform: translateY(var(--fall-y, 50px)) scaleY(0.4) scaleX(1.4); opacity: 1; }
+      100% { transform: translateY(var(--fall-y, 50px)) scaleY(0.2) scaleX(1.6); opacity: 0; }
+    }
+    /* Watering reaction — leaves do a one-shot wiggle */
+    .broom-plant-watered {
+      animation: broom-plant-wiggle 600ms ease-out !important;
     }
 
     /* ── Plant toast ─────────────────────────── */
@@ -1244,7 +1348,7 @@ function pickerStylesheet() {
       #${PANEL_ID}, #${PANEL_ID}.thinking .bp-btn.primary, #${PANEL_ID}.success,
       #${LAUNCHER_WRAP_ID} .broom-fan-chip,
       .broom-empty-slot, .broom-empty-slot-label, .broom-empty-slot-soil,
-      .broom-plant, .broom-plant-enter, .broom-plant-anim-gentle-sway, .broom-plant-particle, .broom-plant-wiggling,
+      .broom-plant, .broom-plant-enter, .broom-plant-anim-gentle-sway, .broom-plant-particle, .broom-plant-hovering, .broom-raindrop, .broom-plant-watered,
       .broom-restore-overlay, .broom-restore-overlay.broom-restore-leaving, .broom-restore-plus,
       #${UNDO_TOAST_ID}, #${UNDO_TOAST_ID}.but-leaving,
       #${PLANT_TOAST_ID}, #${PLANT_TOAST_ID}.bpt-leaving {
@@ -1281,7 +1385,7 @@ function onCursorMove(e) {
   const el = document.getElementById(BROOM_CURSOR_ID);
   if (!el) return;
   // hotspot at the broom-handle tip: 4px from left, 28px down
-  el.style.transform = `translate3d(${e.clientX - 4}px, ${e.clientY - 40}px, 0)`;
+  el.style.transform = `translate3d(${e.clientX - 6}px, ${e.clientY - 58}px, 0)`;
 }
 
 function triggerCursorWiggle() {
@@ -1447,8 +1551,12 @@ function onClick(e) {
 
   if (resolved.plantRule) {
     spawnSparklePuff(e.clientX, e.clientY, 6, 50);
-    stopMode();
-    void sweepAwayPlant(resolved.plantRule);
+    pickerTarget = null;
+    document.getElementById(HIGHLIGHT_ID)?.style.setProperty("opacity", "0");
+    hideSelectorTag();
+    void sweepAwayPlant(resolved.plantRule).then(() => {
+      document.getElementById(HIGHLIGHT_ID)?.style.removeProperty("opacity");
+    });
     return;
   }
 
@@ -1460,7 +1568,7 @@ function onClick(e) {
   pickerTarget = null;
   document.getElementById(HIGHLIGHT_ID)?.style.setProperty("opacity", "0");
   hideSelectorTag();
-  void playSweepAndHide(target, selector).then(() => {
+  void playSweepAndHide(target, selector, { x: e.clientX, y: e.clientY }).then(() => {
     document.getElementById(HIGHLIGHT_ID)?.style.removeProperty("opacity");
   });
 }
@@ -1494,7 +1602,8 @@ function globalKeydown(e) {
     pickerTarget = null;
     document.getElementById(HIGHLIGHT_ID)?.style.setProperty("opacity", "0");
     hideSelectorTag();
-    void playSweepAndHide(target, selector).then(() => {
+    const r = target.getBoundingClientRect();
+    void playSweepAndHide(target, selector, { x: r.right - 8, y: r.top + r.height / 2 }).then(() => {
       document.getElementById(HIGHLIGHT_ID)?.style.removeProperty("opacity");
     });
   }
@@ -1609,33 +1718,29 @@ function openSettingsPopover() {
   pop.id = SETTINGS_ID;
   pop.setAttribute("role", "dialog");
   pop.setAttribute("aria-label", "Broom settings");
+  const { version, build } = getVersionAndBuild();
   pop.innerHTML = `
-    <div class="bs-title">Broom settings</div>
     <label class="bs-row">
-      <span class="bs-row-label">
-        Sound effects
-        <span class="bs-row-hint">Play a swoosh on each sweep.</span>
-      </span>
+      <span class="bs-row-label">Sound effects</span>
       <span class="bs-switch">
         <input type="checkbox" data-pref="soundEnabled" ${cachedPrefs.soundEnabled === false ? "" : "checked"} />
         <span class="bs-switch-track"></span>
       </span>
     </label>
-    <div class="bs-divider"></div>
-    <button class="bs-btn" data-act="rules" type="button">
-      <span class="bs-btn-glyph">📋</span><span>See your changes on this site</span>
-    </button>
-    <button class="bs-btn" data-act="onboarding" type="button">
-      <span class="bs-btn-glyph">🪟</span><span>About</span>
-    </button>
+    <label class="bs-row">
+      <span class="bs-row-label">Show my changes</span>
+      <span class="bs-switch">
+        <input type="checkbox" data-pref="showChanges" ${cachedPrefs.showChanges === false ? "" : "checked"} />
+        <span class="bs-switch-track"></span>
+      </span>
+    </label>
     <div class="bs-divider"></div>
     <button class="bs-btn" data-act="reset" type="button">
       <span class="bs-btn-glyph">🗑️</span><span>Restore original</span>
     </button>
+    <div class="bs-version">Version ${version} (${build})</div>
   `;
   document.documentElement.appendChild(pop);
-
-  pop.addEventListener("click", (e) => e.stopPropagation(), true);
 
   pop.querySelector('input[data-pref="soundEnabled"]').addEventListener("change", async (e) => {
     const enabled = !!e.currentTarget.checked;
@@ -1653,12 +1758,12 @@ function openSettingsPopover() {
   pop.querySelector('[data-act="onboarding"]').addEventListener("click", (e) => {
     e.preventDefault();
     e.stopPropagation();
-    chrome.runtime.sendMessage({ type: "OPEN_ONBOARDING_APP" }, (response) => {
+    closeSettingsPopover();
+    chrome.runtime.sendMessage({ type: "OPEN_ACTION_POPUP" }, (response) => {
       if (chrome.runtime.lastError || (response && response.ok === false)) {
-        console.error("[broom] open onboarding failed:", chrome.runtime.lastError?.message || response?.error);
+        console.error("[broom] open popup failed:", chrome.runtime.lastError?.message || response?.error);
       }
     });
-    closeSettingsPopover();
   });
 
   pop.querySelector('[data-act="reset"]').addEventListener("click", async (e) => {
@@ -1702,7 +1807,7 @@ function closeSettingsPopover() {
 
 // ── Sweep animation — broom passes over the element, sparkles fly out ─────────
 
-async function playSweepAndHide(el, selector) {
+async function playSweepAndHide(el, selector, from = null) {
   if (!el || !el.isConnected) {
     // Element gone — just persist the rule.
     const rule = makeHideRule(selector, null);
@@ -1724,6 +1829,12 @@ async function playSweepAndHide(el, selector) {
 
   playBroomSound();
 
+  // Hide the cursor follower for the duration of the sweep — the sweep broom
+  // takes over visually so the user perceives one broom doing the work.
+  const cursorEl = document.getElementById(BROOM_CURSOR_ID);
+  const prevCursorVis = cursorEl?.style.visibility;
+  if (cursorEl) cursorEl.style.visibility = "hidden";
+
   const overlay = document.createElement("div");
   overlay.id = `${SWEEP_ID}-${Date.now()}`;
   overlay.className = SWEEP_ID;
@@ -1738,21 +1849,47 @@ async function playSweepAndHide(el, selector) {
     overflow: "visible",
   });
 
-  // Broom that sweeps across
-  const broomSize = Math.max(28, Math.min(rect.height * 0.9, 56));
+  // Broom that sweeps across — starts at the click point, sweeps off the left.
+  const broomBox = 64;
+  const broomFont = 60;
+  const hotspotX = 6;   // tip of broom handle within the box
+  const hotspotY = 58;
   const broom = document.createElement("div");
   broom.className = "bsweep-broom";
   broom.textContent = "🧹";
   Object.assign(broom.style, {
     position: "absolute",
-    top: "50%",
+    top: "0",
     left: "0",
-    fontSize: `${broomSize}px`,
-    lineHeight: "1",
-    transformOrigin: "50% 50%",
+    width: `${broomBox}px`,
+    height: `${broomBox}px`,
+    fontSize: `${broomFont}px`,
+    lineHeight: `${broomBox}px`,
+    textAlign: "center",
+    transformOrigin: `${hotspotX}px ${hotspotY}px`,
     willChange: "transform, opacity",
   });
   overlay.appendChild(broom);
+
+  // Compute start position relative to overlay (= element rect). Default to
+  // the right edge if no click point was supplied (e.g. panel-driven hides).
+  const startClientX = from ? from.x : rect.right - 8;
+  const startClientY = from ? from.y : rect.top + rect.height / 2;
+  const sx = startClientX - rect.left - hotspotX;
+  const sy = startClientY - rect.top - hotspotY;
+  const exitX = -broomBox - 40;
+  const totalDx = sx - exitX;
+  broom.animate(
+    [
+      { transform: `translate(${sx}px, ${sy}px) rotate(15deg)`, opacity: 0 },
+      { transform: `translate(${sx}px, ${sy - 4}px) rotate(15deg)`, opacity: 1, offset: 0.06 },
+      { transform: `translate(${sx - totalDx * 0.30}px, ${sy + 6}px) rotate(-12deg)`, offset: 0.32 },
+      { transform: `translate(${sx - totalDx * 0.55}px, ${sy - 4}px) rotate(22deg)`, offset: 0.55 },
+      { transform: `translate(${sx - totalDx * 0.78}px, ${sy + 4}px) rotate(-14deg)`, offset: 0.78 },
+      { transform: `translate(${exitX}px, ${sy}px) rotate(35deg)`, opacity: 0, offset: 1 },
+    ],
+    { duration: 950, easing: "cubic-bezier(.45,.05,.55,.95)", fill: "forwards" },
+  );
 
   // Sparkles
   const glyphs = ["✨", "✦", "✧", "⭐", "💨"];
@@ -1806,6 +1943,7 @@ async function playSweepAndHide(el, selector) {
   // Cleanup overlay; restore element styles in case the rule was rejected.
   overlay.remove();
   if (el.isConnected) el.style.animation = prevAnim;
+  if (cursorEl) cursorEl.style.visibility = prevCursorVis || "";
 }
 
 // Sweep an existing plant decoration away with the same broom animation
@@ -1851,20 +1989,42 @@ async function sweepAwayPlant(rule) {
     overflow: "visible",
   });
 
-  const broomSize = Math.max(28, Math.min(rect.height * 0.9, 56));
+  const broomBox = 64;
+  const broomFont = 60;
+  const hotspotX = 6;
+  const hotspotY = 58;
   const broom = document.createElement("div");
   broom.className = "bsweep-broom";
   broom.textContent = "🧹";
   Object.assign(broom.style, {
     position: "absolute",
-    top: "50%",
+    top: "0",
     left: "0",
-    fontSize: `${broomSize}px`,
-    lineHeight: "1",
-    transformOrigin: "50% 50%",
+    width: `${broomBox}px`,
+    height: `${broomBox}px`,
+    fontSize: `${broomFont}px`,
+    lineHeight: `${broomBox}px`,
+    textAlign: "center",
+    transformOrigin: `${hotspotX}px ${hotspotY}px`,
     willChange: "transform, opacity",
   });
   overlay.appendChild(broom);
+
+  const sx = rect.width - 8 - hotspotX;
+  const sy = rect.height / 2 - hotspotY;
+  const exitX = -broomBox - 40;
+  const totalDx = sx - exitX;
+  broom.animate(
+    [
+      { transform: `translate(${sx}px, ${sy}px) rotate(15deg)`, opacity: 0 },
+      { transform: `translate(${sx}px, ${sy - 4}px) rotate(15deg)`, opacity: 1, offset: 0.06 },
+      { transform: `translate(${sx - totalDx * 0.30}px, ${sy + 6}px) rotate(-12deg)`, offset: 0.32 },
+      { transform: `translate(${sx - totalDx * 0.55}px, ${sy - 4}px) rotate(22deg)`, offset: 0.55 },
+      { transform: `translate(${sx - totalDx * 0.78}px, ${sy + 4}px) rotate(-14deg)`, offset: 0.78 },
+      { transform: `translate(${exitX}px, ${sy}px) rotate(35deg)`, opacity: 0, offset: 1 },
+    ],
+    { duration: 950, easing: "cubic-bezier(.45,.05,.55,.95)", fill: "forwards" },
+  );
 
   const glyphs = ["🍃", "✨", "✦", "🌿", "💨"];
   const sparkleCount = Math.min(14, Math.max(6, Math.round(rect.width / 28)));
@@ -1899,7 +2059,6 @@ async function sweepAwayPlant(rule) {
     const cx = rect.left + rect.width * 0.2;
     const cy = rect.top + rect.height / 2;
     spawnSparklePuff(cx, cy, 8, Math.max(60, rect.width * 0.4));
-    screenShake();
   }, 760);
 
   await new Promise((r) => setTimeout(r, 950));
