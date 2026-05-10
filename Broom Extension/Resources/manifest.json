@@ -7,7 +7,19 @@
   "host_permissions": ["<all_urls>"],
   "action": {
     "default_popup": "popup.html",
-    "default_title": "Broom"
+    "default_title": "Broom",
+    "default_icon": {
+      "16": "broom-icon-16.png",
+      "32": "broom-icon-32.png",
+      "48": "broom-icon-48.png",
+      "128": "broom-icon-128.png"
+    }
+  },
+  "icons": {
+    "16": "broom-icon-16.png",
+    "32": "broom-icon-32.png",
+    "48": "broom-icon-48.png",
+    "128": "broom-icon-128.png"
   },
   "background": {
     "service_worker": "background.js"

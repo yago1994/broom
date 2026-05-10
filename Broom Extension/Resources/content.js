@@ -198,19 +198,22 @@ function applyPlant(rule, options) {
   const plant = renderPlant(rule.payload.plant);
   if (options && options.enterAnimation) {
     plant.classList.add("broom-plant-enter");
-    playPlantSound();
-    [
-      { px: -22, py: -14, color: "#825330", dur: 460, delay: 40 },
-      { px: -11, py: -25, color: "#6b4423", dur: 490, delay: 20 },
-      {  px: 2,  py: -28, color: "#9a6b3e", dur: 510, delay:  0 },
-      { px:  14, py: -23, color: "#7e5530", dur: 470, delay: 35 },
-      { px:  23, py: -12, color: "#4a2f1a", dur: 450, delay: 55 },
-    ].forEach(({ px, py, color, dur, delay }) => {
-      const p = document.createElement("span");
-      p.className = "broom-plant-particle";
-      p.style.cssText = `--px:${px}px;--py:${py}px;background:${color};--dur:${dur}ms;--delay:${delay}ms`;
-      slot.appendChild(p);
-    });
+    // Sound and soil burst sync with foliage emergence (~350ms after pot)
+    setTimeout(() => {
+      playPlantSound();
+      [
+        { px: -22, py: -14, color: "#825330", dur: 460, delay: 0  },
+        { px: -11, py: -25, color: "#6b4423", dur: 490, delay: 20 },
+        {  px: 2,  py: -28, color: "#9a6b3e", dur: 510, delay: 40 },
+        { px:  14, py: -23, color: "#7e5530", dur: 470, delay: 20 },
+        { px:  23, py: -12, color: "#4a2f1a", dur: 450, delay: 10 },
+      ].forEach(({ px, py, color, dur, delay }) => {
+        const p = document.createElement("span");
+        p.className = "broom-plant-particle";
+        p.style.cssText = `--px:${px}px;--py:${py}px;background:${color};--dur:${dur}ms;--delay:${delay}ms`;
+        slot.appendChild(p);
+      });
+    }, 350);
   }
   slot.appendChild(plant);
 
@@ -222,6 +225,9 @@ function applyPlant(rule, options) {
     plant.classList.add("broom-plant-wiggling");
   });
   plant.addEventListener("animationend", (e) => {
+    if (e.animationName === "broom-plant-popin") {
+      plant.classList.remove("broom-plant-enter");
+    }
     if (e.animationName === "broom-plant-wiggle") {
       plant.classList.remove("broom-plant-wiggling");
     }
@@ -289,7 +295,8 @@ const LAUNCHER_WRAP_ID = "broom-launcher-wrap";
 const SWEEP_ID = "broom-sweep";
 const UNDO_TOAST_ID = "broom-undo-toast";
 const SETTINGS_ID = "broom-settings";
-const OUR_UI_SELECTOR = `#${PANEL_ID},#${HIGHLIGHT_ID},#${LAUNCHER_ID},#${LAUNCHER_WRAP_ID},#${UNDO_TOAST_ID},#${SETTINGS_ID},[id^="${SWEEP_ID}"]`;
+const BROOM_CURSOR_ID = "broom-cursor-follower";
+const OUR_UI_SELECTOR = `#${PANEL_ID},#${HIGHLIGHT_ID},#${LAUNCHER_ID},#${LAUNCHER_WRAP_ID},#${UNDO_TOAST_ID},#${SETTINGS_ID},#${BROOM_CURSOR_ID},[id^="${SWEEP_ID}"]`;
 
 let undoToastTimer = null;
 let broomSession = []; // rules swept in the current/most-recent broom session
@@ -304,28 +311,6 @@ let restoreReposition = null;
 let restoreScrollHandler = null;
 let restoreResizeHandler = null;
 let restoreObserver = null;
-
-let broomCursorDataUrl = null;
-
-// Draw 🧹 onto a canvas and export as a CSS cursor data URL.
-function getBroomCursorUrl() {
-  if (broomCursorDataUrl) return broomCursorDataUrl;
-  try {
-    const size = 40;
-    const canvas = document.createElement("canvas");
-    canvas.width = size;
-    canvas.height = size;
-    const ctx = canvas.getContext("2d");
-    ctx.font = `${size * 0.85}px serif`;
-    ctx.textAlign = "center";
-    ctx.textBaseline = "middle";
-    ctx.fillText("🧹", size / 2, size / 2);
-    broomCursorDataUrl = canvas.toDataURL();
-  } catch {
-    broomCursorDataUrl = null;
-  }
-  return broomCursorDataUrl;
-}
 
 function startMode(mode) {
   if (activeMode === mode) return;
@@ -344,8 +329,10 @@ function startMode(mode) {
     hideUndoToast();
     document.documentElement.classList.add("broom-picking");
     ensureHighlight();
+    ensureBroomCursor();
     document.addEventListener("mouseover", onOver, true);
     document.addEventListener("click", onClick, true);
+    document.addEventListener("mousemove", onCursorMove, true);
   } else if (mode === "plant") {
     renderEmptySlotAffordances();
   } else if (mode === "restore") {
@@ -365,9 +352,11 @@ function stopMode() {
   launcher?.removeAttribute("data-mode");
   if (launcher) launcher.textContent = "🧹";
   document.getElementById(HIGHLIGHT_ID)?.remove();
+  document.getElementById(BROOM_CURSOR_ID)?.remove();
   hideSelectorTag();
   document.removeEventListener("mouseover", onOver, true);
   document.removeEventListener("click", onClick, true);
+  document.removeEventListener("mousemove", onCursorMove, true);
   if (prev === "plant") removeEmptySlotAffordances();
   if (prev === "restore") exitRestoreMode();
 }
@@ -377,26 +366,52 @@ function startPicker() { startMode("broom"); }
 function stopPicker() { stopMode(); }
 
 function ensurePickerStyles() {
-  const cursorUrl = getBroomCursorUrl();
-  // hotspot at bottom-left of broom (tip of the handle): 4px from left, 36px down
-  const cursorValue = cursorUrl
-    ? `url('${cursorUrl}') 4 36, crosshair`
-    : "crosshair";
-
   let s = document.getElementById(OVERLAY_STYLE_ID);
   if (!s) {
     s = document.createElement("style");
     s.id = OVERLAY_STYLE_ID;
     document.documentElement.appendChild(s);
   }
-  s.textContent = pickerStylesheet(cursorValue);
+  s.textContent = pickerStylesheet();
 }
 
-function pickerStylesheet(cursorValue) {
+function pickerStylesheet() {
   return `
     html.broom-picking, html.broom-picking * {
-      cursor: ${cursorValue} !important;
+      cursor: none !important;
       user-select: none !important;
+    }
+    #${BROOM_CURSOR_ID} {
+      position: fixed !important;
+      top: 0 !important; left: 0 !important;
+      pointer-events: none !important;
+      z-index: 2147483646 !important;
+      width: 44px !important; height: 44px !important;
+      will-change: transform;
+      transform: translate3d(-100px, -100px, 0);
+    }
+    #${BROOM_CURSOR_ID} .broom-cursor-glyph {
+      display: block;
+      width: 44px; height: 44px;
+      font: 40px/44px "Apple Color Emoji", "Segoe UI Emoji", serif;
+      text-align: center;
+      transform-origin: 4px 40px;
+      transform: rotate(0deg);
+      will-change: transform;
+    }
+    #${BROOM_CURSOR_ID} .broom-cursor-glyph.wiggling {
+      animation: bsweep-cursor-wiggle 420ms cubic-bezier(.22, 1.4, .36, 1) both;
+    }
+    @keyframes bsweep-cursor-wiggle {
+      0%   { transform: rotate(0deg); }
+      18%  { transform: rotate(-14deg); }
+      42%  { transform: rotate(10deg); }
+      64%  { transform: rotate(-6deg); }
+      82%  { transform: rotate(3deg); }
+      100% { transform: rotate(0deg); }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      #${BROOM_CURSOR_ID} .broom-cursor-glyph.wiggling { animation: none !important; }
     }
     #${HIGHLIGHT_ID} {
       position: fixed; pointer-events: none; z-index: 2147483645;
@@ -558,14 +573,22 @@ function pickerStylesheet(cursorValue) {
     #${LAUNCHER_ID}:active { transform: scale(0.92) rotate(-12deg) !important; }
     #${LAUNCHER_ID}.squash { animation: bsweep-launcher-squash 0.32s cubic-bezier(.34,1.56,.64,1) !important; }
     #${LAUNCHER_ID}.active {
-      background: linear-gradient(135deg, #2563eb, #7c3aed) !important;
-      border-color: transparent !important;
-      box-shadow: 0 10px 28px rgba(37,99,235,0.42) !important;
+      background: linear-gradient(135deg, rgba(37,99,235,0.78), rgba(124,58,237,0.78)) !important;
+      border-color: rgba(255,255,255,0.34) !important;
+      box-shadow: 0 10px 24px rgba(37,99,235,0.26) !important;
       animation: bsweep-launcher-wiggle 0.7s ease-in-out infinite alternate !important;
     }
     #${LAUNCHER_ID}[data-mode="plant"] {
-      background: linear-gradient(135deg, #38a169, #6cc551) !important;
-      box-shadow: 0 10px 28px rgba(56,161,105,0.42) !important;
+      background: linear-gradient(135deg, rgba(56,161,105,0.78), rgba(108,197,81,0.78)) !important;
+      box-shadow: 0 10px 24px rgba(56,161,105,0.26) !important;
+    }
+    #${LAUNCHER_ID}[data-mode="restore"] {
+      background: linear-gradient(135deg, rgba(20,184,166,0.78), rgba(14,165,233,0.78)) !important;
+      box-shadow: 0 10px 24px rgba(14,165,233,0.24) !important;
+    }
+    #${LAUNCHER_ID}[data-mode="broom"] {
+      background: linear-gradient(135deg, rgba(37,99,235,0.78), rgba(124,58,237,0.78)) !important;
+      box-shadow: 0 10px 24px rgba(37,99,235,0.26) !important;
     }
 
     /* ── Hover fan menu ──────────────────────── */
@@ -602,8 +625,8 @@ function pickerStylesheet(cursorValue) {
       pointer-events: none !important;
     }
     #${LAUNCHER_WRAP_ID} .broom-fan-chip:hover {
-      box-shadow: 0 6px 14px rgba(15,23,42,0.12), 0 1px 4px rgba(15,23,42,0.06) !important;
-      transform: translateX(0) translateY(-0.5px) scale(1.01) !important;
+      box-shadow: 0 8px 18px rgba(15,23,42,0.16), 0 2px 5px rgba(15,23,42,0.08) !important;
+      transform: translateX(0) translateY(-1px) scale(1.02) !important;
     }
     #${LAUNCHER_WRAP_ID} .broom-fan-glyph {
       font-size: 18px !important;
@@ -624,16 +647,16 @@ function pickerStylesheet(cursorValue) {
     #${LAUNCHER_WRAP_ID}.broom-fan-open .broom-fan-chip:nth-child(3) { transition-delay: 60ms; }
     #${LAUNCHER_WRAP_ID}.broom-fan-open .broom-fan-chip:nth-child(4) { transition-delay: 0ms; }
     #${LAUNCHER_WRAP_ID} .broom-fan-chip[data-mode="plant"]:hover {
-      background: linear-gradient(135deg, rgba(108,197,81,0.05), rgba(56,161,105,0.05)) !important;
-      border-color: rgba(56,161,105,0.22) !important;
+      background: linear-gradient(135deg, rgba(108,197,81,0.10), rgba(56,161,105,0.10)) !important;
+      border-color: rgba(56,161,105,0.34) !important;
     }
     #${LAUNCHER_WRAP_ID} .broom-fan-chip[data-mode="broom"]:hover {
-      background: linear-gradient(135deg, rgba(124,58,237,0.04), rgba(37,99,235,0.04)) !important;
-      border-color: rgba(37,99,235,0.22) !important;
+      background: linear-gradient(135deg, rgba(124,58,237,0.08), rgba(37,99,235,0.08)) !important;
+      border-color: rgba(37,99,235,0.34) !important;
     }
     #${LAUNCHER_WRAP_ID} .broom-fan-chip[data-mode="restore"]:hover {
-      background: linear-gradient(135deg, rgba(20,184,166,0.05), rgba(14,165,233,0.05)) !important;
-      border-color: rgba(14,165,233,0.22) !important;
+      background: linear-gradient(135deg, rgba(20,184,166,0.10), rgba(14,165,233,0.10)) !important;
+      border-color: rgba(14,165,233,0.34) !important;
     }
     #${LAUNCHER_WRAP_ID} .broom-fan-chip[data-action="settings"]:hover {
       background: linear-gradient(135deg, rgba(100,116,139,0.16), rgba(71,85,105,0.16)) !important;
@@ -994,6 +1017,7 @@ function pickerStylesheet(cursorValue) {
       width: 100% !important;
       flex: 1 1 auto !important;
       min-height: 0 !important;
+      transform-origin: bottom center !important;
     }
     .broom-plant-foliage svg { display: block; width: 100%; height: 100%; }
     .broom-plant-pot {
@@ -1005,21 +1029,28 @@ function pickerStylesheet(cursorValue) {
     }
     .broom-plant-pot svg { display: block; width: 100%; height: 100%; }
     .broom-plant-pot-none .broom-plant-pot { display: none !important; }
-    /* Smaller defaults than the overlay version — plants live in-page now
-       and need to fit comfortably inside swept areas without clipping. */
     .broom-plant-sm { width: 44px !important; height: 54px !important; }
     .broom-plant-md { width: 68px !important; height: 84px !important; }
     .broom-plant-lg { width: 96px !important; height: 118px !important; }
-    .broom-plant-anim-gentle-sway {
+    /* Sway and wiggle apply to foliage only — pot stays still */
+    .broom-plant-anim-gentle-sway .broom-plant-foliage {
       animation: broom-plant-sway 5.5s ease-in-out infinite !important;
     }
-    .broom-plant-enter {
-      animation:
-        broom-plant-popin 600ms linear both,
-        broom-plant-sway 5.5s ease-in-out infinite 600ms !important;
-    }
+    /* Entry: pot bounces in first, foliage grows ~350ms later */
     .broom-plant-enter .broom-plant-pot {
-      animation: broom-plant-pot-enter 360ms cubic-bezier(.2,1.3,.4,1) 200ms both !important;
+      animation: broom-plant-pot-enter 400ms cubic-bezier(.2,1.4,.4,1) 0ms both !important;
+    }
+    .broom-plant-enter .broom-plant-foliage {
+      animation:
+        broom-plant-popin 580ms linear 350ms both,
+        broom-plant-sway 5.5s ease-in-out infinite 930ms !important;
+    }
+    @keyframes broom-plant-pot-enter {
+      0%   { opacity: 0; transform: translateY(18px) scale(0.78); }
+      55%  { opacity: 1; transform: translateY(-5px) scale(1.08); }
+      78%  { transform: translateY(3px) scale(0.96); }
+      92%  { transform: translateY(-1px) scale(1.02); }
+      100% { opacity: 1; transform: translateY(0) scale(1); }
     }
     @keyframes broom-plant-popin {
       0%   { opacity: 0; transform: scaleX(1.35) scaleY(0.05) translateY(6px); }
@@ -1028,10 +1059,6 @@ function pickerStylesheet(cursorValue) {
       72%  { opacity: 1; transform: scaleX(0.97) scaleY(1.04) translateY(-2px); }
       88%  { opacity: 1; transform: scaleX(1.01) scaleY(0.99) translateY(1px); }
       100% { opacity: 1; transform: scaleX(1)    scaleY(1)    translateY(0); }
-    }
-    @keyframes broom-plant-pot-enter {
-      0%   { opacity: 0; transform: translateY(10px) scale(0.85); }
-      100% { opacity: 1; transform: translateY(0)    scale(1); }
     }
     @keyframes broom-plant-sway {
       0%   { transform: rotate(-1.4deg); }
@@ -1047,9 +1074,9 @@ function pickerStylesheet(cursorValue) {
       72%  { transform: rotate(1.8deg); }
       100% { transform: rotate(0deg); }
     }
-    .broom-plant-wiggling {
+    /* Wiggle targets foliage only — pot stays still */
+    .broom-plant-wiggling .broom-plant-foliage {
       animation: broom-plant-wiggle 680ms ease-out, broom-plant-sway 5.5s ease-in-out infinite 680ms !important;
-      filter: drop-shadow(0 8px 18px rgba(15,23,42,0.32)) !important;
     }
     @keyframes broom-particle-burst {
       0%   { opacity: 1; transform: translate(0, 0) scale(1.2); }
@@ -1236,6 +1263,37 @@ function ensureHighlight() {
   }
 }
 
+function ensureBroomCursor() {
+  let el = document.getElementById(BROOM_CURSOR_ID);
+  if (!el) {
+    el = document.createElement("div");
+    el.id = BROOM_CURSOR_ID;
+    const glyph = document.createElement("span");
+    glyph.className = "broom-cursor-glyph";
+    glyph.textContent = "🧹";
+    el.appendChild(glyph);
+    document.documentElement.appendChild(el);
+  }
+  return el;
+}
+
+function onCursorMove(e) {
+  const el = document.getElementById(BROOM_CURSOR_ID);
+  if (!el) return;
+  // hotspot at the broom-handle tip: 4px from left, 28px down
+  el.style.transform = `translate3d(${e.clientX - 4}px, ${e.clientY - 40}px, 0)`;
+}
+
+function triggerCursorWiggle() {
+  const el = document.getElementById(BROOM_CURSOR_ID);
+  const glyph = el?.firstElementChild;
+  if (!glyph) return;
+  glyph.classList.remove("wiggling");
+  // Force reflow so removing+adding the class restarts the animation.
+  void glyph.offsetWidth;
+  glyph.classList.add("wiggling");
+}
+
 function isOurUI(el) { return !!el?.closest?.(OUR_UI_SELECTOR + ",#broom-tag,.bsweep-puff"); }
 
 // ── Juice helpers ─────────────────────────────────────────────────────────────
@@ -1361,7 +1419,9 @@ function onOver(e) {
   const resolved = resolveBroomTarget(e.target);
   if (!resolved) return;
   if (!resolved.plantRule && isOurUI(e.target)) return;
+  const prevTarget = pickerTarget;
   pickerTarget = resolved.target;
+  if (prevTarget !== resolved.target) triggerCursorWiggle();
   const r = resolved.target.getBoundingClientRect();
   const h = document.getElementById(HIGHLIGHT_ID);
   if (h) {
