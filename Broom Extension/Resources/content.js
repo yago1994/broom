@@ -192,172 +192,55 @@ function applyRule(rule, options) {
   }
 }
 
-// Plants render in two layers:
-//   1. A small in-page slot (sized to the swept element's box) that
-//      preserves layout space and acts as the positioning anchor.
-//   2. A root-level fixed overlay where the actual plant SVG renders, so
-//      it can visually exceed the original container (which often has
-//      overflow:hidden).
-
-const PLANT_OVERLAY_ID = "broom-plant-overlay";
-const PLANT_OVERLAY_ATTR = "data-broom-overlay-id";
-const PLANT_INTRINSIC = {
-  sm: { width: 60, height: 72 },
-  md: { width: 96, height: 120 },
-  lg: { width: 140, height: 176 }
-};
-
-// ruleId → { slotEl, anchorEl, plantEl }
-const plantTracking = new Map();
-let plantTrackingRaf = null;
-let plantTrackingInstalled = false;
-let plantResizeObserver = null;
-
-function ensurePlantOverlay() {
-  let overlay = document.getElementById(PLANT_OVERLAY_ID);
-  if (!overlay) {
-    overlay = document.createElement("div");
-    overlay.id = PLANT_OVERLAY_ID;
-    overlay.setAttribute("aria-hidden", "true");
-    document.documentElement.appendChild(overlay);
-  }
-  return overlay;
-}
-
-function getPlantSlotBox(rule) {
-  const fromPlant = rule.payload && rule.payload.originalBox;
-  if (fromPlant && fromPlant.width && fromPlant.height) return fromPlant;
-  const hide = appliedRules.find((r) => r.id === (rule.payload && rule.payload.sourceRuleId));
-  const fromHide = hide && hide.payload && hide.payload.originalBox;
-  if (fromHide && fromHide.width && fromHide.height) return fromHide;
-  return PLANT_INTRINSIC[rule.payload.plant.size] || PLANT_INTRINSIC.md;
-}
+// Plants render in-page: an inline-block .broom-plant-slot wrapper is
+// inserted as a sibling of the (now display:none) anchor, and the plant
+// SVG lives inside it. The slot caps to the original swept element's
+// dimensions so the plant can never visually exceed the area the user
+// cleared. Inside, the plant scales down via max-width/max-height: 100%.
 
 function applyPlant(rule, options) {
   const anchor = resolveSelector(rule.selector.primary, rule.selector.fallbacks);
   if (!anchor) return;
   const escId = rule.id.replace(/"/g, '\\"');
-  let slot = document.querySelector(`[${INJECTED_ATTR}="${escId}"]`);
+  if (document.querySelector(`[${INJECTED_ATTR}="${escId}"]`)) return;
 
-  // Re-create slot if missing (DOM may have been re-rendered by the page).
-  if (!slot) {
-    slot = document.createElement("div");
-    slot.setAttribute(INJECTED_ATTR, rule.id);
-    slot.className = "broom-plant-slot";
-    const box = getPlantSlotBox(rule);
-    slot.style.width = `${Math.max(8, box.width)}px`;
-    slot.style.height = `${Math.max(8, box.height)}px`;
-    if (anchor.parentNode) anchor.parentNode.insertBefore(slot, anchor.nextSibling);
+  const slot = document.createElement("div");
+  slot.setAttribute(INJECTED_ATTR, rule.id);
+  slot.className = "broom-plant-slot";
+
+  const box = (rule.payload && rule.payload.originalBox)
+    || (() => {
+      const hide = appliedRules.find((r) => r.id === (rule.payload && rule.payload.sourceRuleId));
+      return hide && hide.payload && hide.payload.originalBox;
+    })()
+    || null;
+  if (box && box.width && box.height) {
+    slot.style.maxWidth = `${box.width}px`;
+    slot.style.maxHeight = `${box.height}px`;
   }
 
-  // Mount/refresh the overlay plant.
-  const overlay = ensurePlantOverlay();
-  let anchorEl = overlay.querySelector(`[${PLANT_OVERLAY_ATTR}="${escId}"]`);
-  if (!anchorEl) {
-    anchorEl = document.createElement("div");
-    anchorEl.className = "broom-plant-anchor";
-    anchorEl.setAttribute(PLANT_OVERLAY_ATTR, rule.id);
-    const frame = renderPlant(rule.payload.plant);
-    const inner = frame.querySelector(".broom-plant");
-    if (inner && options && options.enterAnimation) inner.classList.add("broom-plant-enter");
-    anchorEl.appendChild(frame);
-    overlay.appendChild(anchorEl);
-    plantTracking.set(rule.id, { slotEl: slot, anchorEl, plantEl: inner });
-  } else {
-    plantTracking.set(rule.id, { slotEl: slot, anchorEl, plantEl: anchorEl.querySelector(".broom-plant") });
-  }
+  const plant = renderPlant(rule.payload.plant);
+  if (options && options.enterAnimation) plant.classList.add("broom-plant-enter");
+  slot.appendChild(plant);
 
-  startPlantTracking();
-  positionPlant(rule.id);
+  if (anchor.parentNode) anchor.parentNode.insertBefore(slot, anchor.nextSibling);
 }
 
-function positionPlant(ruleId) {
-  const t = plantTracking.get(ruleId);
-  if (!t) return;
-  if (!t.slotEl || !t.slotEl.isConnected) {
-    t.anchorEl.remove();
-    plantTracking.delete(ruleId);
-    return;
-  }
-  const r = t.slotEl.getBoundingClientRect();
-  if (r.width === 0 && r.height === 0) {
-    t.anchorEl.style.visibility = "hidden";
-    return;
-  }
-  const cx = r.left + r.width / 2;
-  const bottom = r.bottom;
-  // Anchor element is positioned with translate; its own transform-origin
-  // and child wrapper handle pop-in/sway without overwriting position.
-  t.anchorEl.style.transform = `translate(${cx}px, ${bottom}px)`;
-  const onscreen =
-    r.bottom > -200 &&
-    r.top < window.innerHeight + 200 &&
-    r.right > -200 &&
-    r.left < window.innerWidth + 200;
-  t.anchorEl.style.visibility = onscreen ? "visible" : "hidden";
-}
-
-function positionAllPlants() {
-  for (const id of Array.from(plantTracking.keys())) positionPlant(id);
-}
-
-function schedulePlantPositionUpdate() {
-  if (plantTrackingRaf) return;
-  plantTrackingRaf = requestAnimationFrame(() => {
-    plantTrackingRaf = null;
-    positionAllPlants();
-  });
-}
-
-function startPlantTracking() {
-  if (plantTrackingInstalled) return;
-  plantTrackingInstalled = true;
-  window.addEventListener("scroll", schedulePlantPositionUpdate, { passive: true, capture: true });
-  window.addEventListener("resize", schedulePlantPositionUpdate, { passive: true });
-  if (typeof ResizeObserver !== "undefined") {
-    plantResizeObserver = new ResizeObserver(schedulePlantPositionUpdate);
-    if (document.documentElement) plantResizeObserver.observe(document.documentElement);
-    if (document.body) plantResizeObserver.observe(document.body);
-  }
-}
-
-function removeOverlayPlant(ruleId) {
-  const t = plantTracking.get(ruleId);
-  if (t) {
-    t.anchorEl.remove();
-    plantTracking.delete(ruleId);
-  }
-  const escId = ruleId.replace(/"/g, '\\"');
-  document.querySelectorAll(`[${PLANT_OVERLAY_ATTR}="${escId}"]`).forEach((n) => n.remove());
-}
-
-// Plant DOM is three layers:
-//   .broom-plant-frame  — centering wrapper (transform: translate(-50%, 0))
-//   .broom-plant        — sized, animated (sway / pop-in via rotate/scale)
-//   .broom-plant-foliage / .broom-plant-pot — visual content
-// Position (set on the overlay anchor) never collides with animation.
 function renderPlant(props) {
-  const frame = document.createElement("div");
-  frame.className = "broom-plant-frame";
-  frame.setAttribute("aria-hidden", "true");
-
-  const plant = document.createElement("div");
+  const wrapper = document.createElement("div");
   const animClass = props.animation && props.animation !== "none" ? `broom-plant-anim-${props.animation}` : "";
-  plant.className = `broom-plant broom-plant-${props.kind} broom-plant-${props.size} broom-plant-pot-${props.pot} ${animClass}`.trim();
-
+  wrapper.className = `broom-plant broom-plant-${props.kind} broom-plant-${props.size} broom-plant-pot-${props.pot} ${animClass}`.trim();
+  wrapper.setAttribute("aria-hidden", "true");
   const potSvg = POT_SVGS[props.pot] || "";
   const plantSvg = PLANT_SVGS[props.kind] || PLANT_SVGS.pothos;
-  plant.innerHTML = `<div class="broom-plant-foliage">${plantSvg}</div>${potSvg ? `<div class="broom-plant-pot">${potSvg}</div>` : ""}`;
-
-  frame.appendChild(plant);
-  return frame;
+  wrapper.innerHTML = `<div class="broom-plant-foliage">${plantSvg}</div>${potSvg ? `<div class="broom-plant-pot">${potSvg}</div>` : ""}`;
+  return wrapper;
 }
 
 function removeRule(ruleId) {
   styleCache.delete(ruleId);
   rebuildStyleTag();
   document.querySelectorAll(`[${INJECTED_ATTR}="${ruleId.replace(/"/g, '\\"')}"]`).forEach((n) => n.remove());
-  removeOverlayPlant(ruleId);
 }
 
 function applyInject(rule) {
@@ -733,8 +616,10 @@ function pickerStylesheet(cursorValue) {
       transform: translateX(0) translateY(0) scale(1) !important;
       pointer-events: auto !important;
     }
-    #${LAUNCHER_WRAP_ID}.broom-fan-open .broom-fan-chip:nth-child(1) { transition-delay: 60ms; }
-    #${LAUNCHER_WRAP_ID}.broom-fan-open .broom-fan-chip:nth-child(2) { transition-delay: 0ms; }
+    #${LAUNCHER_WRAP_ID}.broom-fan-open .broom-fan-chip:nth-child(1) { transition-delay: 180ms; }
+    #${LAUNCHER_WRAP_ID}.broom-fan-open .broom-fan-chip:nth-child(2) { transition-delay: 120ms; }
+    #${LAUNCHER_WRAP_ID}.broom-fan-open .broom-fan-chip:nth-child(3) { transition-delay: 60ms; }
+    #${LAUNCHER_WRAP_ID}.broom-fan-open .broom-fan-chip:nth-child(4) { transition-delay: 0ms; }
     #${LAUNCHER_WRAP_ID} .broom-fan-chip[data-mode="plant"]:hover {
       background: linear-gradient(135deg, rgba(108,197,81,0.10), rgba(56,161,105,0.10)) !important;
       border-color: rgba(56,161,105,0.34) !important;
@@ -742,6 +627,10 @@ function pickerStylesheet(cursorValue) {
     #${LAUNCHER_WRAP_ID} .broom-fan-chip[data-mode="broom"]:hover {
       background: linear-gradient(135deg, rgba(124,58,237,0.08), rgba(37,99,235,0.08)) !important;
       border-color: rgba(37,99,235,0.34) !important;
+    }
+    #${LAUNCHER_WRAP_ID} .broom-fan-chip[data-mode="restore"]:hover {
+      background: linear-gradient(135deg, rgba(20,184,166,0.10), rgba(14,165,233,0.10)) !important;
+      border-color: rgba(14,165,233,0.34) !important;
     }
     #${LAUNCHER_WRAP_ID} .broom-fan-chip[data-action="settings"]:hover {
       background: linear-gradient(135deg, rgba(100,116,139,0.16), rgba(71,85,105,0.16)) !important;
@@ -1068,73 +957,22 @@ function pickerStylesheet(cursorValue) {
     }
 
     /* ── Planted decoration ──────────────────── */
-    /* In-page slot — preserves layout space, contains nothing visible */
+    /* In-page wrapper that holds the plant. Caps to the swept element's
+       original size (set inline) so the plant can't visually exceed the
+       cleared area. */
     .broom-plant-slot {
       display: inline-block !important;
       vertical-align: top !important;
       pointer-events: none !important;
-      line-height: 1 !important;
+      line-height: 0 !important;
       overflow: visible !important;
       position: relative !important;
     }
-    /* In edit (plant) mode, planted slots get a subtle ground patch so the
-       user can see where plants are anchored. */
-    html[data-broom-mode="plant"] .broom-plant-slot::after {
-      content: "" !important;
-      position: absolute !important;
-      left: 50% !important;
-      bottom: 0 !important;
-      width: 60% !important;
-      height: 6px !important;
-      transform: translateX(-50%) !important;
-      border-radius: 50% !important;
-      background: radial-gradient(ellipse at center, rgba(74,47,26,0.32), rgba(74,47,26,0) 70%) !important;
-      pointer-events: none !important;
-    }
-
-    /* Root-level overlay where actual plants render. Plants can overflow
-       any clipped page container because they live here, not in-page. */
-    #${PLANT_OVERLAY_ID} {
-      all: initial !important;
-      position: fixed !important;
-      top: 0 !important;
-      left: 0 !important;
-      right: 0 !important;
-      bottom: 0 !important;
-      width: 100% !important;
-      height: 100% !important;
-      pointer-events: none !important;
-      z-index: 2147483600 !important;
-      overflow: visible !important;
-    }
-    #${PLANT_OVERLAY_ID} .broom-plant-anchor {
-      position: absolute !important;
-      top: 0 !important;
-      left: 0 !important;
-      width: 0 !important;
-      height: 0 !important;
-      pointer-events: none !important;
-      will-change: transform !important;
-      contain: layout !important;
-    }
-    /* Frame sits with its bottom-center exactly on the anchor point. */
-    #${PLANT_OVERLAY_ID} .broom-plant-frame {
-      position: absolute !important;
-      left: 0 !important;
-      bottom: 0 !important;
-      transform: translate(-50%, 0) !important;
-      display: block !important;
-      pointer-events: none !important;
-    }
-    /* In broom mode, planted decorations become clickable so the user can
-       sweep them away. Container stays pointer-events:none to not block
-       page interaction; only the plant's visible footprint is interactive. */
-    html[data-broom-mode="broom"] #${PLANT_OVERLAY_ID} .broom-plant-frame {
-      pointer-events: auto !important;
-    }
-    /* Inner plant — animated only (rotate/scale). No translate here so
-       sway and pop-in cannot drift away from the anchor. */
-    #${PLANT_OVERLAY_ID} .broom-plant {
+    /* Plant element — sized intrinsically by .sm/.md/.lg, but constrained
+       to its slot via max-width/height: 100%. Slot's inline max-width/
+       max-height (set from the original swept rect) caps the plant inside
+       the area the user actually cleared. */
+    .broom-plant {
       display: inline-flex !important;
       flex-direction: column !important;
       align-items: center !important;
@@ -1142,13 +980,21 @@ function pickerStylesheet(cursorValue) {
       transform-origin: bottom center !important;
       user-select: none !important;
       pointer-events: none !important;
-      filter: drop-shadow(0 6px 8px rgba(15,23,42,0.16)) !important;
+      max-width: 100% !important;
+      max-height: 100% !important;
+      filter: drop-shadow(0 4px 6px rgba(15,23,42,0.18)) !important;
+    }
+    /* In broom mode, planted slots become hoverable/clickable so the user
+       can sweep them away. */
+    html[data-broom-mode="broom"] .broom-plant-slot {
+      pointer-events: auto !important;
     }
     .broom-plant-foliage {
       position: relative !important;
       display: block !important;
       width: 100% !important;
       flex: 1 1 auto !important;
+      min-height: 0 !important;
     }
     .broom-plant-foliage svg { display: block; width: 100%; height: 100%; }
     .broom-plant-pot {
@@ -1156,12 +1002,15 @@ function pickerStylesheet(cursorValue) {
       display: block !important;
       width: 70% !important;
       margin-top: -6% !important;
+      flex: 0 0 auto !important;
     }
     .broom-plant-pot svg { display: block; width: 100%; height: 100%; }
     .broom-plant-pot-none .broom-plant-pot { display: none !important; }
-    .broom-plant-sm { width: 60px !important; height: 72px !important; }
-    .broom-plant-md { width: 96px !important; height: 120px !important; }
-    .broom-plant-lg { width: 140px !important; height: 176px !important; }
+    /* Smaller defaults than the overlay version — plants live in-page now
+       and need to fit comfortably inside swept areas without clipping. */
+    .broom-plant-sm { width: 44px !important; height: 54px !important; }
+    .broom-plant-md { width: 68px !important; height: 84px !important; }
+    .broom-plant-lg { width: 96px !important; height: 118px !important; }
     .broom-plant-anim-gentle-sway {
       animation: broom-plant-sway 5.5s ease-in-out infinite !important;
     }
@@ -1448,12 +1297,11 @@ function popTargetThen(el, cb) {
 // foliage / pot / SVG paths). Returns { target, plantRule? }.
 function resolveBroomTarget(rawTarget) {
   if (!rawTarget) return null;
-  const anchor = rawTarget.closest && rawTarget.closest(".broom-plant-anchor");
-  if (anchor) {
-    const ruleId = anchor.getAttribute(PLANT_OVERLAY_ATTR);
-    const rule = appliedRules.find((r) => r.id === ruleId);
-    const frame = anchor.querySelector(".broom-plant-frame") || anchor;
-    return { target: frame, plantRule: rule || null };
+  const slot = rawTarget.closest && rawTarget.closest(".broom-plant-slot");
+  if (slot) {
+    const ruleId = slot.getAttribute(INJECTED_ATTR);
+    const rule = appliedRules.find((r) => r.id === ruleId && r.payload && r.payload.kind === "plant");
+    return { target: slot, plantRule: rule || null };
   }
   return { target: rawTarget, plantRule: null };
 }
@@ -1522,10 +1370,10 @@ function globalKeydown(e) {
     e.preventDefault();
     e.stopPropagation();
     const target = pickerTarget;
-    const plantAnchor = target.closest && target.closest(".broom-plant-anchor");
-    if (plantAnchor) {
-      const ruleId = plantAnchor.getAttribute(PLANT_OVERLAY_ATTR);
-      const rule = appliedRules.find((r) => r.id === ruleId);
+    const plantSlot = target.closest && target.closest(".broom-plant-slot");
+    if (plantSlot) {
+      const ruleId = plantSlot.getAttribute(INJECTED_ATTR);
+      const rule = appliedRules.find((r) => r.id === ruleId && r.payload && r.payload.kind === "plant");
       stopMode();
       if (rule) void sweepAwayPlant(rule);
       return;
@@ -1554,6 +1402,14 @@ function installLauncher() {
   const fan = document.createElement("div");
   fan.className = "broom-fan";
   fan.innerHTML = `
+    <button class="broom-fan-chip" data-action="settings" type="button" aria-label="Settings">
+      <span class="broom-fan-glyph">⚙️</span>
+      <span class="broom-fan-label">Settings</span>
+    </button>
+    <button class="broom-fan-chip" data-mode="restore" type="button" aria-label="Restore mode">
+      <span class="broom-fan-glyph">♻️</span>
+      <span class="broom-fan-label">Restore</span>
+    </button>
     <button class="broom-fan-chip" data-mode="plant" type="button" aria-label="Plant mode">
       <span class="broom-fan-glyph">🌱</span>
       <span class="broom-fan-label">Plant</span>
@@ -1847,24 +1703,22 @@ async function playSweepAndHide(el, selector) {
 // can replant something else later.
 async function sweepAwayPlant(rule) {
   const escId = rule.id.replace(/"/g, '\\"');
-  const tracked = plantTracking.get(rule.id);
-  const frameEl = tracked && tracked.anchorEl && tracked.anchorEl.querySelector(".broom-plant-frame");
-  const innerEl = tracked && tracked.plantEl;
+  const slotEl = document.querySelector(`[${INJECTED_ATTR}="${escId}"]`);
+  const innerEl = slotEl && slotEl.querySelector(".broom-plant");
 
   const cleanup = async () => {
     appliedRules = appliedRules.filter((r) => r.id !== rule.id);
     document.querySelectorAll(`[${INJECTED_ATTR}="${escId}"]`).forEach((n) => n.remove());
-    removeOverlayPlant(rule.id);
     await deleteRuleLocal(rule.hostname, rule.id);
   };
 
-  if (!frameEl || !frameEl.isConnected) {
+  if (!slotEl || !slotEl.isConnected) {
     await cleanup();
     return;
   }
 
   ensurePickerStyles();
-  const rect = frameEl.getBoundingClientRect();
+  const rect = slotEl.getBoundingClientRect();
   const tooSmall = rect.width < 8 || rect.height < 8;
   const offscreen = rect.bottom < 0 || rect.top > innerHeight || rect.right < 0 || rect.left > innerWidth;
   if (tooSmall || offscreen) {
@@ -2313,7 +2167,6 @@ function showPlantToast(decorateRuleInit, hideRule) {
       payload: { ...decorateRule.payload, plant: next, generatedBy: "random" }
     };
     document.querySelectorAll(`[${INJECTED_ATTR}="${decorateRule.id.replace(/"/g, '\\"')}"]`).forEach((n) => n.remove());
-    removeOverlayPlant(decorateRule.id);
     const idx = appliedRules.findIndex((r) => r.id === decorateRule.id);
     if (idx >= 0) appliedRules[idx] = updated;
     applyPlant(updated, { enterAnimation: true });
@@ -2327,7 +2180,6 @@ function showPlantToast(decorateRuleInit, hideRule) {
     e.preventDefault();
     e.stopPropagation();
     document.querySelectorAll(`[${INJECTED_ATTR}="${decorateRule.id.replace(/"/g, '\\"')}"]`).forEach((n) => n.remove());
-    removeOverlayPlant(decorateRule.id);
     appliedRules = appliedRules.filter((r) => r.id !== decorateRule.id);
     if (activeMode === "plant") renderEmptySlotAffordances();
     await deleteRuleLocal(decorateRule.hostname, decorateRule.id);
@@ -2393,7 +2245,6 @@ function onMutate() {
     if (r.payload.kind === "inject" || r.payload.kind === "plant") applyRule(r);
   }
   if (activeMode === "plant") renderEmptySlotAffordances();
-  schedulePlantPositionUpdate();
 }
 
 async function refreshRules() {
