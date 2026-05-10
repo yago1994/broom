@@ -21,5 +21,10 @@
       "all_frames": false
     }
   ],
-  "web_accessible_resources": []
+  "web_accessible_resources": [
+    {
+      "resources": ["magic-swoosh.mp3"],
+      "matches": ["<all_urls>"]
+    }
+  ]
 }

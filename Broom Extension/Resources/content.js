@@ -1205,6 +1205,18 @@ function isOurUI(el) { return !!el?.closest?.(OUR_UI_SELECTOR + ",#broom-tag,.bs
 const SPARKLE_GLYPHS = ["✨", "✦", "✧", "⭐", "💫"];
 
 // Spawn a small burst of sparkles at viewport coords (for clicks/successes).
+function playBroomSound() {
+  try {
+    const url = chrome.runtime.getURL("magic-swoosh.mp3");
+    console.log("[broom] playing sound:", url);
+    const audio = new Audio(url);
+    audio.volume = 0.6;
+    audio.play().catch(e => console.error("[broom] audio play failed:", e));
+  } catch (e) {
+    console.error("[broom] playBroomSound error:", e);
+  }
+}
+
 function spawnSparklePuff(x, y, count = 6, spread = 60) {
   for (let i = 0; i < count; i++) {
     const s = document.createElement("div");
@@ -1433,6 +1445,8 @@ async function playSweepAndHide(el, selector) {
     applyRule(rule);
     return;
   }
+
+  playBroomSound();
 
   const overlay = document.createElement("div");
   overlay.id = `${SWEEP_ID}-${Date.now()}`;
