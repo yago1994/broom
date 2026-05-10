@@ -3,6 +3,7 @@ import { deleteRule, getRulesForHost, setRuleEnabled } from "./lib/storage.js";
 const hostEl = document.getElementById("host");
 const rulesEl = document.getElementById("rules");
 const pickBtn = document.getElementById("pick");
+const restoreBtn = document.getElementById("restore-toggle");
 const optionsBtn = document.getElementById("options");
 
 render();
@@ -11,6 +12,15 @@ pickBtn.addEventListener("click", async () => {
   const tab = await getActiveTab();
   if (!tab?.id) return;
   chrome.tabs.sendMessage(tab.id, { type: "CONTENT_START_PICKER" }).catch(() => {
+    alert("Broom can't run on this page.");
+  });
+  window.close();
+});
+
+restoreBtn.addEventListener("click", async () => {
+  const tab = await getActiveTab();
+  if (!tab?.id) return;
+  chrome.tabs.sendMessage(tab.id, { type: "CONTENT_TOGGLE_MODE", mode: "restore" }).catch(() => {
     alert("Broom can't run on this page.");
   });
   window.close();

@@ -375,8 +375,17 @@ const LAUNCHER_ID = "broom-launcher";
 const SWEEP_ID = "broom-sweep";
 const OUR_UI_SELECTOR = `#${PANEL_ID},#${HIGHLIGHT_ID},#${LAUNCHER_ID},[id^="${SWEEP_ID}"]`;
 
-let activeMode = null; // "broom" | "plant" | null
+let activeMode = null; // "broom" | "plant" | "restore" | null
 let pickerTarget = null;
+
+// Restore-mode state
+const RESTORE_OVERLAY_ATTR = "data-broom-restore-for";
+let restoreSuspended = new Map(); // ruleId → suspended hide CSS
+let restoreReposition = null;
+let restoreScrollHandler = null;
+let restoreResizeHandler = null;
+let restoreObserver = null;
+
 let broomCursorDataUrl = null;
 
 // Draw 🧹 onto a canvas and export as a CSS cursor data URL.
@@ -409,7 +418,7 @@ function startMode(mode) {
   const launcher = document.getElementById(LAUNCHER_ID);
   launcher?.classList.add("active");
   launcher?.setAttribute("data-mode", mode);
-  if (launcher) launcher.textContent = mode === "plant" ? "🌱" : "🧹";
+  if (launcher) launcher.textContent = mode === "plant" ? "🌱" : mode === "restore" ? "♻️" : "🧹";
 
   if (mode === "broom") {
     document.documentElement.classList.add("broom-picking");
@@ -418,6 +427,8 @@ function startMode(mode) {
     document.addEventListener("click", onClick, true);
   } else if (mode === "plant") {
     renderEmptySlotAffordances();
+  } else if (mode === "restore") {
+    enterRestoreMode();
   }
 }
 
@@ -437,6 +448,7 @@ function stopMode() {
   document.removeEventListener("mouseover", onOver, true);
   document.removeEventListener("click", onClick, true);
   if (prev === "plant") removeEmptySlotAffordances();
+  if (prev === "restore") exitRestoreMode();
 }
 
 // Backward-compat aliases (popup still sends CONTENT_START_PICKER → broom mode)
@@ -1067,6 +1079,53 @@ function pickerStylesheet(cursorValue) {
       100% { opacity: 0; transform: translateY(8px) scale(0.96); }
     }
 
+    /* ── Restore-mode overlay ────────────────── */
+    .broom-restore-overlay {
+      position: fixed !important;
+      z-index: 2147483646 !important;
+      pointer-events: auto !important;
+      box-sizing: border-box !important;
+      border: 2px dashed rgba(37,99,235,0.85) !important;
+      background: rgba(37,99,235,0.14) !important;
+      border-radius: 6px !important;
+      display: flex !important;
+      align-items: center !important;
+      justify-content: center !important;
+      animation: broom-restore-in 220ms cubic-bezier(.2,1.4,.4,1) both !important;
+      transition: opacity 220ms ease, transform 220ms ease !important;
+    }
+    .broom-restore-overlay.broom-restore-leaving {
+      opacity: 0 !important;
+      transform: scale(0.94) !important;
+    }
+    .broom-restore-plus {
+      all: unset;
+      width: 36px !important;
+      height: 36px !important;
+      border-radius: 50% !important;
+      background: #2563eb !important;
+      color: #fff !important;
+      font: 700 22px/1 -apple-system, system-ui, sans-serif !important;
+      display: inline-flex !important;
+      align-items: center !important;
+      justify-content: center !important;
+      cursor: pointer !important;
+      box-shadow: 0 6px 18px rgba(37,99,235,0.42), 0 0 0 3px rgba(255,255,255,0.9) !important;
+      transition: transform 120ms ease, box-shadow 120ms ease, background 120ms ease !important;
+    }
+    .broom-restore-plus:hover {
+      background: #1d4fd8 !important;
+      transform: scale(1.08) !important;
+    }
+    .broom-restore-plus:active { transform: scale(0.94) !important; }
+    .broom-restore-plus:focus-visible {
+      box-shadow: 0 6px 18px rgba(37,99,235,0.42), 0 0 0 3px #fff, 0 0 0 6px rgba(37,99,235,0.45) !important;
+    }
+    @keyframes broom-restore-in {
+      0%   { opacity: 0; transform: scale(0.96); }
+      100% { opacity: 1; transform: scale(1); }
+    }
+
     /* ── Reduced motion ──────────────────────── */
     @media (prefers-reduced-motion: reduce) {
       #${LAUNCHER_ID}, #${LAUNCHER_ID}.active, #${LAUNCHER_ID}.squash,
@@ -1077,6 +1136,7 @@ function pickerStylesheet(cursorValue) {
       #${LAUNCHER_WRAP_ID} .broom-fan-chip,
       .broom-empty-slot, .broom-empty-slot-label, .broom-empty-slot-soil,
       .broom-plant, .broom-plant-enter, .broom-plant-anim-gentle-sway,
+      .broom-restore-overlay, .broom-restore-overlay.broom-restore-leaving, .broom-restore-plus,
       #${PLANT_TOAST_ID}, #${PLANT_TOAST_ID}.bpt-leaving {
         animation: none !important;
         transition: none !important;
@@ -1234,6 +1294,10 @@ function installLauncher() {
   const fan = document.createElement("div");
   fan.className = "broom-fan";
   fan.innerHTML = `
+    <button class="broom-fan-chip" data-mode="restore" type="button" aria-label="Restore mode">
+      <span class="broom-fan-glyph">♻️</span>
+      <span class="broom-fan-label">Restore</span>
+    </button>
     <button class="broom-fan-chip" data-mode="plant" type="button" aria-label="Plant mode">
       <span class="broom-fan-glyph">🌱</span>
       <span class="broom-fan-label">Plant</span>
@@ -1555,6 +1619,135 @@ function removeEmptySlotAffordances() {
   document.querySelectorAll(`[${EMPTY_SLOT_ATTR}]`).forEach((n) => n.remove());
 }
 
+// ── Restore mode ─────────────────────────────────────────────────────────────
+
+function enterRestoreMode() {
+  restoreSuspended = new Map();
+  for (const rule of appliedRules) {
+    if (rule.payload && rule.payload.kind === "hide" && rule.enabled && styleCache.has(rule.id)) {
+      restoreSuspended.set(rule.id, styleCache.get(rule.id));
+      styleCache.delete(rule.id);
+    }
+  }
+  rebuildStyleTag();
+  // Let layout settle before measuring positions.
+  requestAnimationFrame(() => renderRestoreOverlays());
+
+  restoreReposition = rafDebounce(repositionRestoreOverlays);
+  restoreScrollHandler = restoreReposition;
+  restoreResizeHandler = restoreReposition;
+  window.addEventListener("scroll", restoreScrollHandler, { capture: true, passive: true });
+  window.addEventListener("resize", restoreResizeHandler, { passive: true });
+  restoreObserver = new MutationObserver(restoreReposition);
+  if (document.body) restoreObserver.observe(document.body, { childList: true, subtree: true, attributes: true });
+}
+
+function exitRestoreMode() {
+  removeRestoreOverlays();
+  if (restoreScrollHandler) window.removeEventListener("scroll", restoreScrollHandler, { capture: true });
+  if (restoreResizeHandler) window.removeEventListener("resize", restoreResizeHandler);
+  if (restoreObserver) restoreObserver.disconnect();
+  restoreScrollHandler = null;
+  restoreResizeHandler = null;
+  restoreObserver = null;
+  restoreReposition = null;
+
+  // Re-apply any hide rules that were suspended (and not deleted via +).
+  for (const [ruleId, css] of restoreSuspended) {
+    styleCache.set(ruleId, css);
+  }
+  rebuildStyleTag();
+  restoreSuspended = new Map();
+}
+
+function rafDebounce(fn) {
+  let queued = false;
+  return function () {
+    if (queued) return;
+    queued = true;
+    requestAnimationFrame(() => {
+      queued = false;
+      fn();
+    });
+  };
+}
+
+function renderRestoreOverlays() {
+  removeRestoreOverlays();
+  for (const rule of appliedRules) {
+    if (!restoreSuspended.has(rule.id)) continue;
+    const el = resolveSelector(rule.selector.primary, rule.selector.fallbacks);
+    if (!el) continue;
+    const overlay = createRestoreOverlay(rule);
+    document.documentElement.appendChild(overlay);
+    positionRestoreOverlay(overlay, el);
+  }
+}
+
+function createRestoreOverlay(rule) {
+  const overlay = document.createElement("div");
+  overlay.className = "broom-restore-overlay";
+  overlay.setAttribute(RESTORE_OVERLAY_ATTR, rule.id);
+
+  const plus = document.createElement("button");
+  plus.type = "button";
+  plus.className = "broom-restore-plus";
+  plus.setAttribute("aria-label", "Restore this element");
+  plus.textContent = "＋";
+  plus.addEventListener("click", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    void onRestorePlusClick(rule, overlay, e);
+  });
+
+  overlay.appendChild(plus);
+  return overlay;
+}
+
+function positionRestoreOverlay(overlay, el) {
+  const r = el.getBoundingClientRect();
+  if (r.width === 0 && r.height === 0) {
+    overlay.style.display = "none";
+    return;
+  }
+  overlay.style.display = "";
+  overlay.style.top = `${r.top}px`;
+  overlay.style.left = `${r.left}px`;
+  overlay.style.width = `${r.width}px`;
+  overlay.style.height = `${r.height}px`;
+}
+
+function repositionRestoreOverlays() {
+  document.querySelectorAll(`.broom-restore-overlay[${RESTORE_OVERLAY_ATTR}]`).forEach((overlay) => {
+    const ruleId = overlay.getAttribute(RESTORE_OVERLAY_ATTR);
+    const rule = appliedRules.find((r) => r.id === ruleId);
+    if (!rule) { overlay.remove(); return; }
+    const el = resolveSelector(rule.selector.primary, rule.selector.fallbacks);
+    if (!el) { overlay.remove(); return; }
+    positionRestoreOverlay(overlay, el);
+  });
+}
+
+function removeRestoreOverlays() {
+  document.querySelectorAll(`.broom-restore-overlay[${RESTORE_OVERLAY_ATTR}]`).forEach((n) => n.remove());
+}
+
+async function onRestorePlusClick(rule, overlay, evt) {
+  // Drop from suspended map so it stays visible after exiting restore mode.
+  restoreSuspended.delete(rule.id);
+  appliedRules = appliedRules.filter((r) => r.id !== rule.id);
+  styleCache.delete(rule.id);
+  rebuildStyleTag();
+
+  if (evt && typeof evt.clientX === "number") {
+    spawnSparklePuff(evt.clientX, evt.clientY, 6, 50);
+  }
+  overlay.classList.add("broom-restore-leaving");
+  setTimeout(() => overlay.remove(), 220);
+
+  await deleteRuleLocal(rule.hostname, rule.id);
+}
+
 function createEmptySlot(hideRule) {
   const box = (hideRule.payload && hideRule.payload.originalBox) || { width: 120, height: 120 };
   const w = Math.max(80, Math.min(box.width || 120, 480));
@@ -1758,6 +1951,13 @@ async function refreshRules() {
 
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg?.type === "CONTENT_START_PICKER") { startPicker(); sendResponse({ type: "ACK" }); return true; }
+  if (msg?.type === "CONTENT_TOGGLE_MODE") {
+    const m = msg.mode;
+    if (activeMode === m) stopMode();
+    else startMode(m);
+    sendResponse({ type: "ACK" });
+    return true;
+  }
   if (msg?.type === "CONTENT_APPLY_RULE") { applyRule(msg.rule); void refreshRules(); sendResponse({ type: "ACK" }); return true; }
   if (msg?.type === "CONTENT_REMOVE_RULE") { removeRule(msg.ruleId); void refreshRules(); sendResponse({ type: "ACK" }); return true; }
   return false;
