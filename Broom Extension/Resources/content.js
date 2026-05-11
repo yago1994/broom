@@ -580,6 +580,9 @@ function stopMode() {
   if (launcher) launcher.textContent = "🧹";
   document.getElementById(HIGHLIGHT_ID)?.remove();
   document.getElementById(BROOM_CURSOR_ID)?.remove();
+  // Cursor element is gone — drop any pending hide refs so the next broom
+  // session starts with a clean, visible follower.
+  cursorHideRefCount = 0;
   hideSelectorTag();
   document.removeEventListener("mouseover", onOver, true);
   document.removeEventListener("click", onClick, true);
@@ -1669,6 +1672,24 @@ function ensureBroomCursor() {
   return el;
 }
 
+// Reference-counted visibility for the broom cursor follower. Multiple sweeps
+// can overlap when the user broomsweeps several elements in quick succession;
+// without a counter, a naïve save/restore would capture the already-hidden
+// state and leave the follower permanently invisible.
+let cursorHideRefCount = 0;
+function hideBroomCursorForSweep() {
+  cursorHideRefCount++;
+  const cursorEl = document.getElementById(BROOM_CURSOR_ID);
+  if (cursorEl) cursorEl.style.visibility = "hidden";
+}
+function showBroomCursorAfterSweep() {
+  cursorHideRefCount = Math.max(0, cursorHideRefCount - 1);
+  if (cursorHideRefCount === 0) {
+    const cursorEl = document.getElementById(BROOM_CURSOR_ID);
+    if (cursorEl) cursorEl.style.visibility = "";
+  }
+}
+
 function onCursorMove(e) {
   const el = document.getElementById(BROOM_CURSOR_ID);
   if (!el) return;
@@ -2150,9 +2171,8 @@ async function playSweepAndHide(el, selector, from = null) {
 
   // Hide the cursor follower for the duration of the sweep — the sweep broom
   // takes over visually so the user perceives one broom doing the work.
-  const cursorEl = document.getElementById(BROOM_CURSOR_ID);
-  const prevCursorVis = cursorEl?.style.visibility;
-  if (cursorEl) cursorEl.style.visibility = "hidden";
+  // Ref-counted so overlapping sweeps don't leave the follower stuck hidden.
+  hideBroomCursorForSweep();
 
   const overlay = document.createElement("div");
   overlay.id = `${SWEEP_ID}-${Date.now()}`;
@@ -2264,7 +2284,7 @@ async function playSweepAndHide(el, selector, from = null) {
   // Cleanup overlay; restore element styles in case the rule was rejected.
   overlay.remove();
   if (el.isConnected) el.style.animation = prevAnim;
-  if (cursorEl) cursorEl.style.visibility = prevCursorVis || "";
+  showBroomCursorAfterSweep();
 }
 
 // Sweep an existing plant decoration away with the same broom animation
@@ -2296,6 +2316,8 @@ async function sweepAwayPlant(rule) {
     await cleanup();
     return;
   }
+
+  hideBroomCursorForSweep();
 
   const overlay = document.createElement("div");
   overlay.id = `${SWEEP_ID}-${Date.now()}`;
@@ -2385,6 +2407,7 @@ async function sweepAwayPlant(rule) {
 
   await new Promise((r) => setTimeout(r, 950));
   overlay.remove();
+  showBroomCursorAfterSweep();
   await cleanup();
 }
 
