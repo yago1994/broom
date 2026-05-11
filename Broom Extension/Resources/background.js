@@ -1,7 +1,7 @@
 // Broom background service worker.
 "use strict";
 
-const BROOM_UPDATE_MANIFEST_URL = "https://yagoarconada.com/apps/broom-files/update.json";
+const BROOM_UPDATE_MANIFEST_URL = "https://yagoarconada.com/apps/broom_files/app-update.json";
 
 chrome.runtime.onInstalled.addListener(() => {
   console.log("[broom] installed");

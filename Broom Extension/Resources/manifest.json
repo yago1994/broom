@@ -1,12 +1,12 @@
 {
   "manifest_version": 3,
   "name": "Broom",
-  "version": "1.0 (1)",
+  "version": "1.0",
+  "version_name": "1.0 (5)",
   "description": "Point at any element, describe what you want changed, and it sticks.",
   "permissions": ["storage", "activeTab", "scripting", "nativeMessaging"],
   "host_permissions": ["<all_urls>"],
   "action": {
-    "default_popup": "popup.html",
     "default_title": "Broom",
     "default_icon": {
       "16": "broom-icon-16.png",

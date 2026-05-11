@@ -3,6 +3,6 @@
 <plist version="1.0">
 <dict>
 	<key>BroomUpdateManifestURL</key>
-	<string>https://yagoarconada.com/apps/broom-files/update.json</string>
+	<string>https://yagoarconada.com/apps/broom_files/app-update.json</string>
 </dict>
 </plist>

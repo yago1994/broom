@@ -123,7 +123,9 @@ async function setPref(key, value) {
 }
 
 function getVersionAndBuild() {
-  const raw = String(chrome.runtime?.getManifest?.()?.version || "0").trim();
+  // Prefer version_name (free-form, may include "1.0 (2)") over version (strict numeric).
+  const manifest = chrome.runtime?.getManifest?.() || {};
+  const raw = String(manifest.version_name || manifest.version || "0").trim();
   const paren = raw.match(/^([\d.]+)\s*\((\d+)\)$/);
   if (paren) return { version: paren[1], build: paren[2] };
   const parts = raw.split(".");
@@ -158,6 +160,7 @@ function setUpdateButtonState(btn, state, opts = {}) {
   btn.className = "bs-update-btn";
   btn.dataset.state = state;
   btn.disabled = false;
+  let statusMessage = "";
   switch (state) {
     case "checking":
       btn.classList.add("is-checking");
@@ -171,6 +174,7 @@ function setUpdateButtonState(btn, state, opts = {}) {
       btn.innerHTML = UPDATE_CHECK_SVG;
       btn.title = "You're on the latest version";
       btn.setAttribute("aria-label", "Up to date");
+      statusMessage = "You're on the latest version";
       break;
     case "available":
       btn.classList.add("has-update");
@@ -179,15 +183,26 @@ function setUpdateButtonState(btn, state, opts = {}) {
       btn.setAttribute("aria-label", "Download update");
       break;
     case "error":
-      btn.classList.add("is-error");
       btn.innerHTML = UPDATE_REFRESH_SVG;
       btn.title = opts.message || "Couldn't check for updates — click to retry";
       btn.setAttribute("aria-label", "Update check failed");
+      statusMessage = "Couldn't check for updates — try again later";
       break;
     default:
       btn.innerHTML = UPDATE_REFRESH_SVG;
       btn.title = "Check for updates";
       btn.setAttribute("aria-label", "Check for updates");
+  }
+  const versionContainer = btn.closest(".bs-version");
+  const status = versionContainer && versionContainer.querySelector(".bs-update-status");
+  if (status) {
+    if (statusMessage) {
+      status.textContent = statusMessage;
+      status.classList.add("is-visible");
+    } else {
+      status.classList.remove("is-visible");
+      status.textContent = "";
+    }
   }
 }
 
@@ -941,15 +956,40 @@ function pickerStylesheet() {
     }
     #${SETTINGS_ID} .bs-version {
       display: flex !important;
+      flex-direction: column !important;
       align-items: center !important;
-      justify-content: center !important;
-      gap: 8px !important;
+      gap: 4px !important;
       font: 500 11px/1 -apple-system, system-ui, sans-serif !important;
       color: #94a3b8 !important;
       margin: 10px 0 2px !important;
       letter-spacing: 0.02em !important;
     }
+    #${SETTINGS_ID} .bs-version-row {
+      display: flex !important;
+      align-items: center !important;
+      justify-content: center !important;
+      gap: 6px !important;
+    }
     #${SETTINGS_ID} .bs-version-text { line-height: 1 !important; }
+    #${SETTINGS_ID} .bs-update-status {
+      font: 500 10.5px/1.35 -apple-system, system-ui, sans-serif !important;
+      color: #94a3b8 !important;
+      text-align: center !important;
+      letter-spacing: 0.01em !important;
+      max-width: 100% !important;
+      max-height: 0 !important;
+      opacity: 0 !important;
+      overflow: hidden !important;
+      white-space: normal !important;
+      overflow-wrap: anywhere !important;
+      word-break: normal !important;
+      transition: opacity 0.18s ease, max-height 0.22s ease, padding 0.22s ease !important;
+    }
+    #${SETTINGS_ID} .bs-update-status.is-visible {
+      max-height: 120px !important;
+      padding-top: 2px !important;
+      opacity: 1 !important;
+    }
     #${SETTINGS_ID} .bs-update-btn {
       all: unset !important;
       box-sizing: border-box !important;
@@ -957,42 +997,37 @@ function pickerStylesheet() {
       align-items: center !important;
       justify-content: center !important;
       gap: 4px !important;
-      width: 22px !important;
-      height: 22px !important;
+      width: 28px !important;
+      height: 28px !important;
       padding: 0 !important;
       border-radius: 50% !important;
       cursor: pointer !important;
-      color: #64748b !important;
-      background: rgba(148,163,184,0.16) !important;
-      transition: background 0.14s ease, color 0.14s ease, transform 0.12s ease, width 0.18s ease, padding 0.18s ease, border-radius 0.18s ease !important;
+      color: #94a3b8 !important;
+      background: transparent !important;
+      transition: color 0.14s ease, transform 0.12s ease, background 0.18s ease, width 0.18s ease, padding 0.18s ease, border-radius 0.18s ease !important;
       flex: 0 0 auto !important;
     }
-    #${SETTINGS_ID} .bs-update-btn:hover { background: rgba(148,163,184,0.28) !important; color: #1f2937 !important; }
+    #${SETTINGS_ID} .bs-update-btn:hover { color: #475569 !important; }
     #${SETTINGS_ID} .bs-update-btn:active { transform: scale(0.92) !important; }
     #${SETTINGS_ID} .bs-update-btn:disabled { cursor: progress !important; }
-    #${SETTINGS_ID} .bs-update-btn svg { width: 12px !important; height: 12px !important; display: block !important; pointer-events: none !important; }
+    #${SETTINGS_ID} .bs-update-btn svg { width: 16px !important; height: 16px !important; display: block !important; pointer-events: none !important; }
     #${SETTINGS_ID} .bs-update-btn.is-checking svg { animation: bsweep-update-spin 0.85s linear infinite !important; }
-    #${SETTINGS_ID} .bs-update-btn.is-uptodate {
-      background: rgba(34,197,94,0.18) !important;
-      color: #15803d !important;
-    }
-    #${SETTINGS_ID} .bs-update-btn.is-error {
-      background: rgba(220,38,38,0.14) !important;
-      color: #b91c1c !important;
-    }
+    #${SETTINGS_ID} .bs-update-btn.is-uptodate { color: #15803d !important; }
+    #${SETTINGS_ID} .bs-update-btn.is-uptodate:hover { color: #15803d !important; }
     #${SETTINGS_ID} .bs-update-btn.has-update {
       width: auto !important;
-      height: 22px !important;
-      padding: 0 9px !important;
+      height: 28px !important;
+      padding: 0 12px !important;
       border-radius: 999px !important;
-      gap: 5px !important;
+      gap: 6px !important;
       background: linear-gradient(135deg, #b07a45, #6b4321) !important;
       color: #fff !important;
-      font: 700 11px/1 -apple-system, system-ui, sans-serif !important;
+      font: 700 12px/1 -apple-system, system-ui, sans-serif !important;
       letter-spacing: 0.02em !important;
-      box-shadow: 0 4px 10px rgba(107,67,33,0.28) !important;
+      box-shadow: 0 4px 12px rgba(107,67,33,0.28) !important;
     }
-    #${SETTINGS_ID} .bs-update-btn.has-update:hover { filter: brightness(1.08) !important; background: linear-gradient(135deg, #b07a45, #6b4321) !important; }
+    #${SETTINGS_ID} .bs-update-btn.has-update:hover { filter: brightness(1.08) !important; color: #fff !important; }
+    #${SETTINGS_ID} .bs-update-btn.has-update svg { width: 14px !important; height: 14px !important; }
     #${SETTINGS_ID} .bs-update-btn .bs-update-label { font-weight: 700 !important; }
     @keyframes bsweep-update-spin { to { transform: rotate(360deg); } }
     #${SETTINGS_ID} .bs-row {
@@ -1992,8 +2027,11 @@ function openSettingsPopover() {
       <span class="bs-btn-glyph">🗑️</span><span>Restore original</span>
     </button>
     <div class="bs-version">
-      <span class="bs-version-text">Version ${version} (${build})</span>
-      <button class="bs-update-btn" data-state="idle" type="button" title="Check for updates" aria-label="Check for updates">${UPDATE_REFRESH_SVG}</button>
+      <div class="bs-version-row">
+        <span class="bs-version-text">Version ${version} (${build})</span>
+        <button class="bs-update-btn" data-state="idle" type="button" title="Check for updates" aria-label="Check for updates">${UPDATE_REFRESH_SVG}</button>
+      </div>
+      <div class="bs-update-status" aria-live="polite"></div>
     </div>
   `;
   document.documentElement.appendChild(pop);
@@ -2026,7 +2064,6 @@ function openSettingsPopover() {
   });
 
   const updateBtn = pop.querySelector(".bs-update-btn");
-  let upToDateRevertTimer = null;
   updateBtn.addEventListener("click", async (e) => {
     e.preventDefault();
     e.stopPropagation();
@@ -2036,7 +2073,6 @@ function openSettingsPopover() {
       window.open(BROOM_DOWNLOAD_URL, "_blank", "noopener,noreferrer");
       return;
     }
-    clearTimeout(upToDateRevertTimer);
     setUpdateButtonState(updateBtn, "checking");
     const resp = await requestUpdateCheck();
     if (!updateBtn.isConnected) return;
@@ -2053,11 +2089,6 @@ function openSettingsPopover() {
       setUpdateButtonState(updateBtn, "available", { latest });
     } else {
       setUpdateButtonState(updateBtn, "uptodate");
-      upToDateRevertTimer = setTimeout(() => {
-        if (updateBtn.isConnected && updateBtn.dataset.state === "uptodate") {
-          setUpdateButtonState(updateBtn, "idle");
-        }
-      }, 2400);
     }
   });
 
@@ -2256,6 +2287,7 @@ async function sweepAwayPlant(rule) {
     return;
   }
 
+  playBroomSound();
   ensurePickerStyles();
   const rect = slotEl.getBoundingClientRect();
   const tooSmall = rect.width < 8 || rect.height < 8;

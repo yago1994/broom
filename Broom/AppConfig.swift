@@ -7,7 +7,7 @@ import Foundation
 
 enum AppConfig {
     /// Fallback when `BroomUpdateManifestURL` is absent from Info.plist (host JSON without rebuilding).
-    static let defaultUpdateManifestURL = URL(string: "https://yagoarconada.com/apps/broom-files/update.json")!
+    static let defaultUpdateManifestURL = URL(string: "https://yagoarconada.com/apps/broom_files/app-update.json")!
 
     static var updateManifestURL: URL {
         guard let raw = Bundle.main.object(forInfoDictionaryKey: "BroomUpdateManifestURL") as? String,
