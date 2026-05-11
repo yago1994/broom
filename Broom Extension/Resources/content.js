@@ -12,6 +12,62 @@ function uuid() {
   });
 }
 
+// ── Analytics ────────────────────────────────────────────────────────────────
+
+const ANALYTICS_URL = "https://broom-analytics.pasalacabra.workers.dev/analytics";
+const INSTALL_ID_KEY = "installId";
+let _installId = null;
+
+async function getInstallId() {
+  if (_installId) return _installId;
+  const r = await chrome.storage.local.get(INSTALL_ID_KEY);
+  if (r[INSTALL_ID_KEY]) { _installId = r[INSTALL_ID_KEY]; return _installId; }
+  _installId = uuid();
+  await chrome.storage.local.set({ [INSTALL_ID_KEY]: _installId });
+  return _installId;
+}
+
+async function trackEvent(event) {
+  try {
+    const install_id = await getInstallId();
+    const extension_version = String(chrome.runtime?.getManifest?.()?.version || "0");
+    await fetch(ANALYTICS_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ event, install_id, extension_version }),
+    });
+  } catch { /* never break the app */ }
+}
+
+const ANALYTICS_INSTALL_FLAG = "analyticsInstalled";
+const ANALYTICS_DAILY_KEY = "analyticsDailyDate";
+
+async function trackFirstInstallAndDaily() {
+  try {
+    const today = new Date().toISOString().slice(0, 10);
+    const r = await chrome.storage.local.get([ANALYTICS_INSTALL_FLAG, ANALYTICS_DAILY_KEY]);
+    if (!r[ANALYTICS_INSTALL_FLAG]) {
+      await chrome.storage.local.set({ [ANALYTICS_INSTALL_FLAG]: true });
+      void trackEvent("install");
+    }
+    if (r[ANALYTICS_DAILY_KEY] !== today) {
+      await chrome.storage.local.set({ [ANALYTICS_DAILY_KEY]: today });
+      void trackEvent("daily_active");
+    }
+  } catch { /* never break the app */ }
+}
+
+async function trackSiteSavedIfNew(hostname) {
+  try {
+    const key = `analyticsSite_${hostname}`;
+    const r = await chrome.storage.local.get(key);
+    if (!r[key]) {
+      await chrome.storage.local.set({ [key]: true });
+      void trackEvent("site_saved");
+    }
+  } catch { /* never break the app */ }
+}
+
 // ── Storage (chrome.storage.local) ───────────────────────────────────────────
 
 const RULES_KEY = "rules";
@@ -1844,6 +1900,8 @@ async function playSweepAndHide(el, selector, from = null) {
     const rule = makeHideRule(selector, null);
     await upsertRuleLocal(rule);
     applyRule(rule);
+    void trackEvent("sweep");
+    void trackSiteSavedIfNew(location.hostname);
     return;
   }
   ensurePickerStyles();
@@ -1855,6 +1913,8 @@ async function playSweepAndHide(el, selector, from = null) {
     const rule = makeHideRule(selector, { width: rect.width, height: rect.height });
     await upsertRuleLocal(rule);
     applyRule(rule);
+    void trackEvent("sweep");
+    void trackSiteSavedIfNew(location.hostname);
     return;
   }
 
@@ -1967,6 +2027,8 @@ async function playSweepAndHide(el, selector, from = null) {
   const rule = makeHideRule(selector, { width: rect.width, height: rect.height });
   await upsertRuleLocal(rule);
   applyRule(rule);
+  void trackEvent("sweep");
+  void trackSiteSavedIfNew(location.hostname);
 
   broomSession.push(rule);
   showUndoToast([rule]);
@@ -2354,6 +2416,7 @@ async function onEmptySlotClick(hideRule, slotEl, evt) {
   }
 
   await upsertRuleLocal(decorateRule);
+  void trackEvent("plant_added");
   showPlantToast(decorateRule, hideRule);
 }
 
@@ -2519,6 +2582,8 @@ async function init() {
   await loadPrefs();
   appliedRules = await getRulesForHost(location.hostname);
   for (const r of appliedRules) applyRule(r);
+
+  void trackFirstInstallAndDaily();
 
   // Persistent UI: launcher + global keyboard handler
   ensurePickerStyles();
