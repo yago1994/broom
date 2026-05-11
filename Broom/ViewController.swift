@@ -24,6 +24,10 @@ class ViewController: NSViewController, WKNavigationDelegate, WKScriptMessageHan
     }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        let versionForJS = Self.javaScriptStringLiteral(AppVersion.formattedDisplay)
+        DispatchQueue.main.async {
+            webView.evaluateJavaScript("setAppVersion(\(versionForJS))", completionHandler: nil)
+        }
         SFSafariExtensionManager.getStateOfSafariExtension(withIdentifier: extensionBundleIdentifier) { state, error in
             guard let state, error == nil else { return }
             DispatchQueue.main.async {
@@ -34,6 +38,19 @@ class ViewController: NSViewController, WKNavigationDelegate, WKScriptMessageHan
                 }
             }
         }
+    }
+
+    /// JSON-safe quoted fragment for embedding in JS: `NSJSONSerialization` only accepts array/dict at the root.
+    private static func javaScriptStringLiteral(_ string: String) -> String {
+        guard let data = try? JSONSerialization.data(withJSONObject: [string]),
+              let wrapped = String(data: data, encoding: .utf8),
+              wrapped.count >= 2,
+              wrapped.first == "[",
+              wrapped.last == "]"
+        else {
+            return "\"\""
+        }
+        return String(wrapped.dropFirst().dropLast())
     }
 
     func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {

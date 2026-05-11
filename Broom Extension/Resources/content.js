@@ -133,6 +133,80 @@ function getVersionAndBuild() {
   return { version: head.join("."), build };
 }
 
+// ── Update check ──────────────────────────────────────────────────────────────
+const BROOM_DOWNLOAD_URL = "https://yagoarconada.com/apps/broom.html";
+
+// Numeric dot-segment compare (treats non-numeric as 0). 1.10 > 1.9.
+function compareSemver(a, b) {
+  const pa = String(a).split(".").map((s) => parseInt(s, 10) || 0);
+  const pb = String(b).split(".").map((s) => parseInt(s, 10) || 0);
+  const n = Math.max(pa.length, pb.length);
+  for (let i = 0; i < n; i++) {
+    const va = pa[i] || 0;
+    const vb = pb[i] || 0;
+    if (va !== vb) return va < vb ? -1 : 1;
+  }
+  return 0;
+}
+
+const UPDATE_REFRESH_SVG = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 0 1 15.5-6.3"/><path d="M21 4v5h-5"/><path d="M21 12a9 9 0 0 1-15.5 6.3"/><path d="M3 20v-5h5"/></svg>`;
+const UPDATE_CHECK_SVG = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="5 12 10 17 19 7"/></svg>`;
+const UPDATE_DOWNLOAD_SVG = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4v12"/><polyline points="6 12 12 18 18 12"/><path d="M5 20h14"/></svg>`;
+
+function setUpdateButtonState(btn, state, opts = {}) {
+  if (!btn) return;
+  btn.className = "bs-update-btn";
+  btn.dataset.state = state;
+  btn.disabled = false;
+  switch (state) {
+    case "checking":
+      btn.classList.add("is-checking");
+      btn.innerHTML = UPDATE_REFRESH_SVG;
+      btn.title = "Checking for updates…";
+      btn.setAttribute("aria-label", "Checking for updates");
+      btn.disabled = true;
+      break;
+    case "uptodate":
+      btn.classList.add("is-uptodate");
+      btn.innerHTML = UPDATE_CHECK_SVG;
+      btn.title = "You're on the latest version";
+      btn.setAttribute("aria-label", "Up to date");
+      break;
+    case "available":
+      btn.classList.add("has-update");
+      btn.innerHTML = `${UPDATE_DOWNLOAD_SVG}<span class="bs-update-label">Update</span>`;
+      btn.title = opts.latest ? `Download Broom ${opts.latest}` : "Download update";
+      btn.setAttribute("aria-label", "Download update");
+      break;
+    case "error":
+      btn.classList.add("is-error");
+      btn.innerHTML = UPDATE_REFRESH_SVG;
+      btn.title = opts.message || "Couldn't check for updates — click to retry";
+      btn.setAttribute("aria-label", "Update check failed");
+      break;
+    default:
+      btn.innerHTML = UPDATE_REFRESH_SVG;
+      btn.title = "Check for updates";
+      btn.setAttribute("aria-label", "Check for updates");
+  }
+}
+
+function requestUpdateCheck() {
+  return new Promise((resolve) => {
+    try {
+      chrome.runtime.sendMessage({ type: "broom:checkUpdate" }, (resp) => {
+        if (chrome.runtime.lastError) {
+          resolve({ ok: false, error: chrome.runtime.lastError.message });
+          return;
+        }
+        resolve(resp || { ok: false, error: "No response" });
+      });
+    } catch (e) {
+      resolve({ ok: false, error: String((e && e.message) || e) });
+    }
+  });
+}
+
 // Plant catalog (POT_SVGS, PLANT_SVGS, PLANT_NAMES) is defined in lib/plants.js
 
 const SHOVEL_CURSOR_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32"><path d="M22 3 l7 7 -3 3 -2 -2 -10 10 -3 -3 10 -10 -2 -2 z" fill="#caa376" stroke="#5a4424" stroke-width="1.4" stroke-linejoin="round"/><path d="M11 17 l-5 5 q-3 3 -1 5 q2 2 5 -1 l5 -5 z" fill="#7e8a96" stroke="#3a4047" stroke-width="1.4" stroke-linejoin="round"/></svg>`;
@@ -156,15 +230,15 @@ function randomFrom(arr) { return arr[Math.floor(Math.random() * arr.length)]; }
 function chooseRandomPlant(hideRule) {
   const box = (hideRule.payload && hideRule.payload.originalBox) || { width: 120, height: 120 };
   const h = box.height;
-  const small = ["succulent", "fern", "snake-plant", "cactus", "aloe", "lavender", "pine", "tulips", "topiary", "air-plant"];
-  const medium = ["pothos", "fern", "snake-plant", "monstera", "cactus", "aloe", "peace-lily", "calathea", "orchid", "zz-plant", "spider-plant", "cherry-blossom", "eucalyptus", "tulips", "sunflower", "topiary", "string-of-pearls"];
-  const large = ["bird-of-paradise", "monstera", "pothos", "bamboo", "palm", "fiddle-leaf", "orchid", "zz-plant", "spider-plant", "pampas", "cherry-blossom", "eucalyptus", "sunflower"];
+  const small = ["succulent", "fern", "snake-plant", "cactus", "aloe", "lavender", "pine", "tulips", "topiary", "air-plant", "daisies", "pilea"];
+  const medium = ["pothos", "fern", "snake-plant", "monstera", "cactus", "aloe", "peace-lily", "calathea", "orchid", "zz-plant", "spider-plant", "cherry-blossom", "eucalyptus", "tulips", "sunflower", "topiary", "string-of-pearls", "rose-bush", "hydrangea", "bonsai", "daisies", "pilea", "maple"];
+  const large = ["bird-of-paradise", "monstera", "pothos", "bamboo", "palm", "fiddle-leaf", "orchid", "zz-plant", "spider-plant", "pampas", "cherry-blossom", "eucalyptus", "sunflower", "rose-bush", "hydrangea", "bonsai", "maple"];
   const pool = h < 90 ? small : h > 180 ? large : medium;
   return {
     kind: randomFrom(pool),
     size: h > 180 ? "lg" : h > 90 ? "md" : "sm",
     animation: "gentle-sway",
-    pot: randomFrom(["terracotta", "ceramic", "none"])
+    pot: randomFrom(["terracotta", "ceramic"])
   };
 }
 
@@ -866,12 +940,61 @@ function pickerStylesheet() {
       to { opacity: 0; transform: translateY(6px) scale(0.96); }
     }
     #${SETTINGS_ID} .bs-version {
+      display: flex !important;
+      align-items: center !important;
+      justify-content: center !important;
+      gap: 8px !important;
       font: 500 11px/1 -apple-system, system-ui, sans-serif !important;
       color: #94a3b8 !important;
-      text-align: center !important;
       margin: 10px 0 2px !important;
       letter-spacing: 0.02em !important;
     }
+    #${SETTINGS_ID} .bs-version-text { line-height: 1 !important; }
+    #${SETTINGS_ID} .bs-update-btn {
+      all: unset !important;
+      box-sizing: border-box !important;
+      display: inline-flex !important;
+      align-items: center !important;
+      justify-content: center !important;
+      gap: 4px !important;
+      width: 22px !important;
+      height: 22px !important;
+      padding: 0 !important;
+      border-radius: 50% !important;
+      cursor: pointer !important;
+      color: #64748b !important;
+      background: rgba(148,163,184,0.16) !important;
+      transition: background 0.14s ease, color 0.14s ease, transform 0.12s ease, width 0.18s ease, padding 0.18s ease, border-radius 0.18s ease !important;
+      flex: 0 0 auto !important;
+    }
+    #${SETTINGS_ID} .bs-update-btn:hover { background: rgba(148,163,184,0.28) !important; color: #1f2937 !important; }
+    #${SETTINGS_ID} .bs-update-btn:active { transform: scale(0.92) !important; }
+    #${SETTINGS_ID} .bs-update-btn:disabled { cursor: progress !important; }
+    #${SETTINGS_ID} .bs-update-btn svg { width: 12px !important; height: 12px !important; display: block !important; pointer-events: none !important; }
+    #${SETTINGS_ID} .bs-update-btn.is-checking svg { animation: bsweep-update-spin 0.85s linear infinite !important; }
+    #${SETTINGS_ID} .bs-update-btn.is-uptodate {
+      background: rgba(34,197,94,0.18) !important;
+      color: #15803d !important;
+    }
+    #${SETTINGS_ID} .bs-update-btn.is-error {
+      background: rgba(220,38,38,0.14) !important;
+      color: #b91c1c !important;
+    }
+    #${SETTINGS_ID} .bs-update-btn.has-update {
+      width: auto !important;
+      height: 22px !important;
+      padding: 0 9px !important;
+      border-radius: 999px !important;
+      gap: 5px !important;
+      background: linear-gradient(135deg, #b07a45, #6b4321) !important;
+      color: #fff !important;
+      font: 700 11px/1 -apple-system, system-ui, sans-serif !important;
+      letter-spacing: 0.02em !important;
+      box-shadow: 0 4px 10px rgba(107,67,33,0.28) !important;
+    }
+    #${SETTINGS_ID} .bs-update-btn.has-update:hover { filter: brightness(1.08) !important; background: linear-gradient(135deg, #b07a45, #6b4321) !important; }
+    #${SETTINGS_ID} .bs-update-btn .bs-update-label { font-weight: 700 !important; }
+    @keyframes bsweep-update-spin { to { transform: rotate(360deg); } }
     #${SETTINGS_ID} .bs-row {
       display: flex !important;
       align-items: center !important;
@@ -1334,6 +1457,23 @@ function pickerStylesheet() {
     }
     #${PLANT_TOAST_ID} .bpt-btn:hover { background: rgba(56,161,105,0.32); }
     #${PLANT_TOAST_ID} .bpt-btn:active { transform: scale(0.96); }
+    #${PLANT_TOAST_ID} .bpt-close {
+      all: unset;
+      cursor: pointer;
+      width: 22px;
+      height: 22px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 50%;
+      font: 600 16px/1 -apple-system, system-ui, sans-serif;
+      color: rgba(248,250,252,0.7);
+      background: rgba(248,250,252,0.08);
+      margin-left: 2px;
+      transition: background 0.12s, color 0.12s, transform 0.1s;
+    }
+    #${PLANT_TOAST_ID} .bpt-close:hover { background: rgba(248,250,252,0.18); color: #f8fafc; }
+    #${PLANT_TOAST_ID} .bpt-close:active { transform: scale(0.9); }
     @keyframes broom-toast-in {
       0%   { opacity: 0; transform: translateY(12px) scale(0.95); }
       100% { opacity: 1; transform: translateY(0) scale(1); }
@@ -1386,6 +1526,24 @@ function pickerStylesheet() {
     }
     #${UNDO_TOAST_ID} .but-btn:hover { background: rgba(125,151,255,0.32); }
     #${UNDO_TOAST_ID} .but-btn:active { transform: scale(0.96); }
+    #${UNDO_TOAST_ID} .but-close {
+      all: unset;
+      cursor: pointer;
+      width: 22px;
+      height: 22px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 50%;
+      font: 600 16px/1 -apple-system, system-ui, sans-serif;
+      color: rgba(248,250,252,0.7);
+      background: rgba(248,250,252,0.08);
+      margin-left: 2px;
+      transition: background 0.12s, color 0.12s, transform 0.1s;
+    }
+    #${UNDO_TOAST_ID} .but-close:hover { background: rgba(248,250,252,0.18); color: #f8fafc; }
+    #${UNDO_TOAST_ID} .but-close:active { transform: scale(0.9); }
+    html.broom-picking #${UNDO_TOAST_ID} .but-close { cursor: pointer !important; }
 
     /* ── Restore-mode overlay ────────────────── */
     .broom-restore-overlay {
@@ -1833,7 +1991,10 @@ function openSettingsPopover() {
     <button class="bs-btn" data-act="reset" type="button">
       <span class="bs-btn-glyph">🗑️</span><span>Restore original</span>
     </button>
-    <div class="bs-version">Version ${version} (${build})</div>
+    <div class="bs-version">
+      <span class="bs-version-text">Version ${version} (${build})</span>
+      <button class="bs-update-btn" data-state="idle" type="button" title="Check for updates" aria-label="Check for updates">${UPDATE_REFRESH_SVG}</button>
+    </div>
   `;
   document.documentElement.appendChild(pop);
 
@@ -1862,6 +2023,42 @@ function openSettingsPopover() {
     for (const r of [...appliedRules]) removeRule(r.id);
     appliedRules = [];
     closeSettingsPopover();
+  });
+
+  const updateBtn = pop.querySelector(".bs-update-btn");
+  let upToDateRevertTimer = null;
+  updateBtn.addEventListener("click", async (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const state = updateBtn.dataset.state;
+    if (state === "checking") return;
+    if (state === "available") {
+      window.open(BROOM_DOWNLOAD_URL, "_blank", "noopener,noreferrer");
+      return;
+    }
+    clearTimeout(upToDateRevertTimer);
+    setUpdateButtonState(updateBtn, "checking");
+    const resp = await requestUpdateCheck();
+    if (!updateBtn.isConnected) return;
+    if (!resp || !resp.ok) {
+      setUpdateButtonState(updateBtn, "error", { message: resp && resp.error });
+      return;
+    }
+    const latest = resp.data && resp.data.latestVersion;
+    if (!latest) {
+      setUpdateButtonState(updateBtn, "error", { message: "Couldn't read update manifest" });
+      return;
+    }
+    if (compareSemver(latest, version) > 0) {
+      setUpdateButtonState(updateBtn, "available", { latest });
+    } else {
+      setUpdateButtonState(updateBtn, "uptodate");
+      upToDateRevertTimer = setTimeout(() => {
+        if (updateBtn.isConnected && updateBtn.dataset.state === "uptodate") {
+          setUpdateButtonState(updateBtn, "idle");
+        }
+      }, 2400);
+    }
   });
 
   // Click outside to dismiss
@@ -2459,6 +2656,7 @@ function showUndoToast(rules) {
     <span class="but-icon">🧹</span>
     <span class="but-msg">${label}</span>
     <button class="but-btn" data-act="undo" type="button">Undo</button>
+    <button class="but-close" data-act="close" type="button" aria-label="Close">×</button>
   `;
   document.documentElement.appendChild(toast);
 
@@ -2483,6 +2681,12 @@ function showUndoToast(rules) {
     if (broomSession.length > 0) {
       showUndoToast([broomSession[broomSession.length - 1]]);
     }
+  });
+
+  toast.querySelector('[data-act="close"]').addEventListener("click", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    hideUndoToast();
   });
 
   toast.addEventListener("mouseenter", () => clearTimeout(undoToastTimer));
@@ -2518,6 +2722,7 @@ function showPlantToast(decorateRuleInit, hideRule) {
     <span class="bpt-msg"></span>
     <button class="bpt-btn" data-act="shuffle" type="button">Shuffle</button>
     <button class="bpt-btn" data-act="remove" type="button">Remove</button>
+    <button class="bpt-close" data-act="close" type="button" aria-label="Close">×</button>
   `;
   document.documentElement.appendChild(toast);
   const msgEl = toast.querySelector(".bpt-msg");
@@ -2551,6 +2756,12 @@ function showPlantToast(decorateRuleInit, hideRule) {
     appliedRules = appliedRules.filter((r) => r.id !== decorateRule.id);
     if (activeMode === "plant") renderEmptySlotAffordances();
     await deleteRuleLocal(decorateRule.hostname, decorateRule.id);
+    hidePlantToast();
+  });
+
+  toast.querySelector('[data-act="close"]').addEventListener("click", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
     hidePlantToast();
   });
 

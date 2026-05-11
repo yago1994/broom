@@ -1,3 +1,8 @@
+function setAppVersion(text) {
+    var el = document.getElementById("app-version");
+    if (el) el.textContent = text;
+}
+
 function show(enabled, useSettingsInsteadOfPreferences) {
     if (useSettingsInsteadOfPreferences) {
         document.getElementsByClassName('state-on')[0].innerText = "Broom is on. You can turn it off in the Extensions section of Safari Settings.";
