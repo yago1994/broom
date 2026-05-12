@@ -1,0 +1,49 @@
+{
+  "manifest_version": 3,
+  "name": "Broom",
+  "version": "1.0",
+  "description": "Point at any element, describe what you want changed, and it sticks.",
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "broom@yagoarconada.com",
+      "strict_min_version": "121.0",
+      "data_collection_permissions": {
+        "required": ["none"]
+      }
+    }
+  },
+  "permissions": ["storage", "activeTab"],
+  "host_permissions": ["<all_urls>"],
+  "action": {
+    "default_title": "Broom",
+    "default_icon": {
+      "16": "broom-icon-16.png",
+      "32": "broom-icon-32.png",
+      "48": "broom-icon-48.png",
+      "128": "broom-icon-128.png"
+    }
+  },
+  "icons": {
+    "16": "broom-icon-16.png",
+    "32": "broom-icon-32.png",
+    "48": "broom-icon-48.png",
+    "128": "broom-icon-128.png"
+  },
+  "background": {
+    "scripts": ["background.js"]
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["lib/plants.js", "content.js"],
+      "run_at": "document_start",
+      "all_frames": false
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["magic-swoosh.m4a", "pop.mp3"],
+      "matches": ["<all_urls>"]
+    }
+  ]
+}

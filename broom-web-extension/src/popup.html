@@ -1,0 +1,43 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Broom</title>
+    <style>
+      body { font: 13px -apple-system, system-ui, sans-serif; width: 320px; margin: 0; padding: 12px; color: #111; }
+      h1 { font-size: 13px; margin: 0 0 8px; font-weight: 600; }
+      .host { color: #555; font-size: 11px; margin-bottom: 10px; word-break: break-all; }
+      button { font: inherit; padding: 6px 10px; border: 1px solid #ccc; background: #f7f7f7; border-radius: 4px; cursor: pointer; }
+      button.primary { background: #2563eb; color: #fff; border-color: #2563eb; }
+      button:hover { filter: brightness(0.97); }
+      .row { display: flex; gap: 6px; margin-bottom: 10px; }
+      ul { list-style: none; margin: 0; padding: 0; max-height: 320px; overflow-y: auto; }
+      li { border: 1px solid #eee; border-radius: 4px; padding: 6px 8px; margin-bottom: 6px; display: flex; gap: 6px; align-items: flex-start; }
+      .rule-meta { flex: 1; min-width: 0; }
+      .rule-type { display: inline-block; font-size: 10px; padding: 1px 5px; border-radius: 3px; background: #eef; color: #335; margin-right: 4px; text-transform: uppercase; }
+      .rule-sel { font-family: ui-monospace, monospace; font-size: 11px; color: #444; word-break: break-all; }
+      .rule-broken { background: #fee; }
+      .empty { color: #94a3b8; font-size: 12px; padding: 18px 0 12px; text-align: center; line-height: 1.5; }
+      .empty-icon { font-size: 28px; margin-bottom: 6px; animation: empty-wiggle 2.4s ease-in-out infinite alternate; }
+      .empty-hint { font-size: 11px; color: #cbd5e1; margin-top: 4px; }
+      .empty-hint em { color: #2563eb; font-style: normal; font-weight: 600; }
+      @keyframes empty-wiggle { from { transform: rotate(-12deg); } to { transform: rotate(12deg); } }
+      .icon-btn { padding: 2px 6px; font-size: 11px; }
+      li { transition: opacity 0.18s, transform 0.22s, max-height 0.22s, padding 0.22s, margin 0.22s; max-height: 80px; overflow: hidden; }
+      li.rule-leaving { opacity: 0; transform: translateX(40px); max-height: 0; padding-top: 0; padding-bottom: 0; margin-bottom: 0; border-color: transparent; }
+      @media (prefers-reduced-motion: reduce) {
+        .empty-icon, li, li.rule-leaving { animation: none !important; transition: none !important; }
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Broom</h1>
+    <div class="host" id="host">…</div>
+    <div class="row">
+      <button class="primary" id="pick">Edit this page</button>
+      <button id="restore-toggle">♻️ Restore</button>
+    </div>
+    <ul id="rules"></ul>
+    <script type="module" src="popup.js"></script>
+  </body>
+</html>
