@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Broom & Bloom",
-  "version": "1.0",
+  "version": "1.0.1",
   "description": "Clean YOUR internet. Sweep what bugs you. Grow a garden where it used to be.",
   "permissions": ["storage", "activeTab"],
   "host_permissions": ["<all_urls>"],

@@ -9,6 +9,4 @@ safari/
 xcuserdata/
 *.xcuserstate
 *.xcuserdatad/
-broom-web-extension/web-ext-artifacts/broom-chrome-1.0.zip
-broom-web-extension/web-ext-artifacts/broom-1.0.zip
-broom-web-extension/broom-chrome.zip
+broom-web-extension/web-ext-artifacts/
