@@ -348,7 +348,9 @@ function applyPlant(rule, options) {
     })()
     || null;
   if (box && box.width && box.height) {
-    slot.style.maxWidth = `${box.width}px`;
+    const w = Math.max(80, Math.min(box.width, 480));
+    slot.style.width = `${w}px`;
+    slot.style.maxWidth = `${w}px`;
     slot.style.maxHeight = `${box.height}px`;
   }
 
@@ -385,8 +387,10 @@ function applyPlant(rule, options) {
     plant.classList.remove("broom-plant-hovering");
   });
   slot.addEventListener("click", (e) => {
-    if (activeMode !== null) return;
+    if (activeMode !== null && activeMode !== "plant") return;
     if (plant.classList.contains("broom-plant-enter")) return;
+    e.preventDefault();
+    e.stopPropagation();
     spawnRaindrop(slot, plant, e);
   });
   plant.addEventListener("animationend", (e) => {
@@ -447,7 +451,8 @@ function spawnRaindrop(slot, plant, event) {
     ].forEach(({ px, py, dur, delay }) => {
       const s = document.createElement("span");
       s.className = "broom-plant-particle broom-plant-splash";
-      s.style.cssText = `left:${clickX}px;bottom:auto;top:${landingY}px;--px:${px}px;--py:${py}px;background:#7ab8e8;--dur:${dur}ms;--delay:${delay}ms`;
+      s.style.cssText = `bottom:auto;top:${landingY}px;--px:${px}px;--py:${py}px;background:#7ab8e8;--dur:${dur}ms;--delay:${delay}ms`;
+      s.style.setProperty("left", `${clickX}px`, "important");
       slot.appendChild(s);
       s.addEventListener("animationend", () => s.remove(), { once: true });
     });
@@ -929,6 +934,21 @@ function pickerStylesheet() {
       border-color: rgba(71,85,105,0.6) !important;
       color: #1e293b !important;
     }
+    #${LAUNCHER_WRAP_ID}.broom-fan-open .broom-fan-chip[data-broom-off="true"] {
+      opacity: 0.35 !important;
+      cursor: not-allowed !important;
+      pointer-events: auto !important;
+      transform: none !important;
+      box-shadow: none !important;
+      filter: grayscale(0.6) !important;
+    }
+    #${LAUNCHER_WRAP_ID}.broom-fan-open .broom-fan-chip[data-broom-off="true"]:hover {
+      background: rgba(255,255,255,0.99) !important;
+      border-color: rgba(107,67,33,0.24) !important;
+      color: #1f2937 !important;
+      transform: none !important;
+      box-shadow: none !important;
+    }
 
     /* ── Settings popover ────────────────────── */
     #${SETTINGS_ID} {
@@ -1313,12 +1333,15 @@ function pickerStylesheet() {
        original size (set inline) so the plant can't visually exceed the
        cleared area. */
     .broom-plant-slot {
-      display: inline-block !important;
+      display: inline-flex !important;
+      justify-content: center !important;
+      align-items: flex-end !important;
       vertical-align: top !important;
       pointer-events: auto !important;
       line-height: 0 !important;
       overflow: visible !important;
       position: relative !important;
+      margin: 4px 0 !important;
     }
     /* Plant element — sized intrinsically by .sm/.md/.lg, but constrained
        to its slot via max-width/height: 100%. Slot's inline max-width/
@@ -1459,8 +1482,8 @@ function pickerStylesheet() {
     #${PLANT_TOAST_ID} {
       all: initial !important;
       position: fixed !important;
-      bottom: 96px !important;
-      right: 22px !important;
+      bottom: 22px !important;
+      left: 22px !important;
       z-index: 2147483647 !important;
       display: inline-flex !important;
       align-items: center !important;
@@ -1889,6 +1912,7 @@ function globalKeydown(e) {
     let handled = false;
     if (activeMode) { stopMode(); handled = true; }
     if (document.getElementById(PANEL_ID)) { closePanel(); handled = true; }
+    if (document.getElementById(PLANT_TOAST_ID)) { hidePlantToast(); handled = true; }
     if (handled) { e.preventDefault(); e.stopPropagation(); }
     return;
   }
@@ -1981,9 +2005,9 @@ function installLauncher() {
     void main.offsetWidth;
     main.classList.add("squash");
     setTimeout(() => main.classList.remove("squash"), 360);
+    hidePlantToast();
     if (activeMode) {
       stopMode();
-      hidePlantToast();
       wrap.classList.remove("broom-fan-open");
     } else {
       // Toggle expand on tap (touch / keyboard)
@@ -1995,6 +2019,7 @@ function installLauncher() {
     chip.addEventListener("click", (e) => {
       e.preventDefault();
       e.stopPropagation();
+      if (chip.dataset.broomOff === "true") return;
       const r = chip.getBoundingClientRect();
       spawnSparklePuff(r.left + r.width / 2, r.top + r.height / 2, 6, 50);
       wrap.classList.remove("broom-fan-open");
@@ -2002,6 +2027,7 @@ function installLauncher() {
         toggleSettingsPopover();
         return;
       }
+      if (document.getElementById(SETTINGS_ID)) closeSettingsPopover();
       const mode = chip.dataset.mode;
       if (activeMode === mode) stopMode();
       else startMode(mode);
@@ -2009,6 +2035,18 @@ function installLauncher() {
   });
 
   document.documentElement.appendChild(wrap);
+  updateLauncherForShowChanges();
+}
+
+function updateLauncherForShowChanges() {
+  const wrap = document.getElementById(LAUNCHER_WRAP_ID);
+  if (!wrap) return;
+  const off = cachedPrefs.showChanges === false;
+  wrap.querySelectorAll(".broom-fan-chip[data-mode]").forEach((chip) => {
+    if (off) chip.setAttribute("data-broom-off", "true");
+    else chip.removeAttribute("data-broom-off");
+  });
+  if (off && activeMode) stopMode();
 }
 
 // ── Settings popover ──────────────────────────────────────────────────────────
@@ -2066,6 +2104,7 @@ function openSettingsPopover() {
   pop.querySelector('input[data-pref="showChanges"]').addEventListener("change", async (e) => {
     const enabled = !!e.currentTarget.checked;
     await setPref("showChanges", enabled);
+    updateLauncherForShowChanges();
     if (enabled) {
       for (const r of appliedRules) applyRule(r);
     } else {
@@ -2914,6 +2953,7 @@ chrome.storage.onChanged.addListener((changes, area) => {
     cachedPrefs = { ...DEFAULT_PREFS, ...(changes[PREFS_KEY].newValue || {}) };
     const nextShow = cachedPrefs.showChanges !== false;
     if (prevShow !== nextShow) {
+      updateLauncherForShowChanges();
       if (nextShow) for (const r of appliedRules) applyRule(r);
       else for (const r of appliedRules) removeRule(r.id);
     }
