@@ -2,8 +2,8 @@
   "manifest_version": 3,
   "name": "Broom",
   "version": "1.0",
-  "version_name": "1.0 (7)",
-  "description": "Point at any element, describe what you want changed, and it sticks.",
+  "version_name": "1.0 (8)",
+  "description": "Clean YOUR internet. Sweep what bugs you. Grow a garden where it used to be.",
   "permissions": ["storage", "activeTab", "scripting", "nativeMessaging"],
   "host_permissions": ["<all_urls>"],
   "action": {
