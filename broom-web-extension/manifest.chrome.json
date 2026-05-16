@@ -33,7 +33,7 @@
   ],
   "web_accessible_resources": [
     {
-      "resources": ["magic-swoosh.m4a", "pop.mp3"],
+      "resources": ["magic-swoosh.m4a", "pop.mp3", "move-pot.m4a"],
       "matches": ["<all_urls>"]
     }
   ]

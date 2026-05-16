@@ -242,6 +242,14 @@ const SHOVEL_CURSOR_DATA_URL = `url('data:image/svg+xml;utf8,${encodeURIComponen
 
 function randomFrom(arr) { return arr[Math.floor(Math.random() * arr.length)]; }
 
+// Map a swept-element box to a plant size class. Shared by initial planting
+// (chooseRandomPlant) and by drag-and-drop moves so a plant always matches
+// its current slot's footprint.
+function plantSizeForBox(box) {
+  const h = (box && box.height) || 120;
+  return h > 180 ? "lg" : h > 90 ? "md" : "sm";
+}
+
 function chooseRandomPlant(hideRule) {
   const box = (hideRule.payload && hideRule.payload.originalBox) || { width: 120, height: 120 };
   const h = box.height;
@@ -251,7 +259,7 @@ function chooseRandomPlant(hideRule) {
   const pool = h < 90 ? small : h > 180 ? large : medium;
   return {
     kind: randomFrom(pool),
-    size: h > 180 ? "lg" : h > 90 ? "md" : "sm",
+    size: plantSizeForBox(box),
     animation: "gentle-sway",
     pot: randomFrom(["terracotta", "ceramic"])
   };
@@ -331,6 +339,37 @@ function applyRule(rule, options) {
 // dimensions so the plant can never visually exceed the area the user
 // cleared. Inside, the plant scales down via max-width/max-height: 100%.
 
+// Returns a short, human-friendly relative time like "just now", "3 days
+// ago", "last month". Used for the handwritten name-note that appears
+// below a plant on hover (e.g. "planted 3 days ago"). Pure local logic,
+// no Intl.RelativeTimeFormat dependency so behavior is identical across
+// all the browsers the extension ships into.
+function formatPlantedAgo(createdAt) {
+  const ts = typeof createdAt === "number" ? createdAt : Date.parse(createdAt);
+  if (!ts || Number.isNaN(ts)) return "";
+  const diffMs = Math.max(0, Date.now() - ts);
+  const sec = Math.floor(diffMs / 1000);
+  if (sec < 45) return "just now";
+  const min = Math.floor(sec / 60);
+  if (min < 2)  return "a minute ago";
+  if (min < 60) return `${min} minutes ago`;
+  const hr = Math.floor(min / 60);
+  if (hr < 2)   return "an hour ago";
+  if (hr < 24)  return `${hr} hours ago`;
+  const day = Math.floor(hr / 24);
+  if (day < 2)  return "yesterday";
+  if (day < 7)  return `${day} days ago`;
+  const wk = Math.floor(day / 7);
+  if (wk < 2)   return "last week";
+  if (wk < 5)   return `${wk} weeks ago`;
+  const mo = Math.floor(day / 30);
+  if (mo < 2)   return "last month";
+  if (mo < 12)  return `${mo} months ago`;
+  const yr = Math.floor(day / 365);
+  if (yr < 2)   return "a year ago";
+  return `${yr} years ago`;
+}
+
 function applyPlant(rule, options) {
   const anchor = resolveSelector(rule.selector.primary, rule.selector.fallbacks);
   if (!anchor) return;
@@ -376,8 +415,28 @@ function applyPlant(rule, options) {
   }
   slot.appendChild(plant);
 
+  // Handwritten name-note: hangs below the pot on hover and gently expands
+  // (revealing "planted N days ago") when the user moves onto the note
+  // itself. Visibility is gated purely in CSS by `html:not([data-broom-mode])`
+  // so the note never collides with the broom-mode selector tag or the
+  // plant-mode "Plant here" affordance.
+  const note = document.createElement("div");
+  note.className = "broom-plant-note";
+  note.setAttribute("aria-hidden", "true");
+  const noteName = document.createElement("span");
+  noteName.className = "broom-plant-note-name";
+  noteName.textContent = PLANT_NAMES[rule.payload.plant.kind] || "plant";
+  const noteDate = document.createElement("span");
+  noteDate.className = "broom-plant-note-date";
+  const ago = formatPlantedAgo(rule.createdAt);
+  noteDate.textContent = ago ? `planted ${ago}` : "";
+  note.appendChild(noteName);
+  if (noteDate.textContent) note.appendChild(noteDate);
+  slot.appendChild(note);
+
   slot.addEventListener("mouseenter", () => {
     if (document.documentElement.dataset.broomMode === "broom") return;
+    if (activePlantDrag) return;
     if (plant.classList.contains("broom-plant-enter")) return;
     plant.classList.remove("broom-plant-hovering");
     void plant.offsetWidth;
@@ -387,6 +446,15 @@ function applyPlant(rule, options) {
     plant.classList.remove("broom-plant-hovering");
   });
   slot.addEventListener("click", (e) => {
+    // Suppress click that immediately follows a drag (pointer-event ordering:
+    // pointerup → click). The drag flow sets this flag synchronously on the
+    // slot so the next click is consumed without watering the plant.
+    if (slot._broomDragJustEnded) {
+      delete slot._broomDragJustEnded;
+      e.preventDefault();
+      e.stopPropagation();
+      return;
+    }
     if (activeMode !== null && activeMode !== "plant") return;
     if (plant.classList.contains("broom-plant-enter")) return;
     e.preventDefault();
@@ -398,6 +466,8 @@ function applyPlant(rule, options) {
       plant.classList.remove("broom-plant-enter");
     }
   });
+
+  attachPlantDragHandlers(slot, plant, rule);
 
   if (anchor.parentNode) anchor.parentNode.insertBefore(slot, anchor.nextSibling);
 }
@@ -477,6 +547,316 @@ function renderPlant(props) {
   const plantSvg = PLANT_SVGS[props.kind] || PLANT_SVGS.pothos;
   wrapper.innerHTML = `<div class="broom-plant-foliage">${plantSvg}</div>${potSvg ? `<div class="broom-plant-pot">${potSvg}</div>` : ""}`;
   return wrapper;
+}
+
+// ── Plant drag-and-drop ──────────────────────────────────────────────────────
+// In plant mode the user can drag a planted plant onto any empty slot to move
+// it there. Implementation notes:
+//   • Pointer Events drive the gesture so mouse + touch work uniformly.
+//   • A small movement threshold prevents stealing the existing click→water.
+//   • A cloned plant element acts as the drag ghost (fixed-position, follows
+//     the cursor). The source slot stays in place but is dimmed so its
+//     emptied location is still visible while the user decides.
+//   • `document.elementFromPoint` finds candidate `.broom-empty-slot`s; the
+//     ghost has `pointer-events: none` so it never blocks hit-testing.
+//   • On drop, the decorate rule is rewritten to point at the new hide slot
+//     (selector + sourceRuleId + originalBox), then re-applied so the plant
+//     refits to the destination's box. Source slot reappears as empty via
+//     the standard `renderEmptySlotAffordances()` reconciliation.
+
+const PLANT_DRAG_THRESHOLD_PX = 5;
+let activePlantDrag = null;
+
+function attachPlantDragHandlers(slot, plantEl, rule) {
+  slot.addEventListener("pointerdown", (e) => {
+    if (activeMode !== "plant") return;
+    if (e.button !== undefined && e.button !== 0) return;
+    if (plantEl.classList.contains("broom-plant-enter")) return;
+    if (activePlantDrag) return;
+
+    const state = {
+      rule,
+      slotEl: slot,
+      plantEl,
+      pointerId: e.pointerId,
+      startX: e.clientX,
+      startY: e.clientY,
+      dragging: false,
+      currentTarget: null,
+      ghost: null,
+      offsetX: 0,
+      offsetY: 0
+    };
+
+    const onMove = (mv) => {
+      if (mv.pointerId !== state.pointerId) return;
+      if (!state.dragging) {
+        const dx = mv.clientX - state.startX;
+        const dy = mv.clientY - state.startY;
+        if (dx * dx + dy * dy < PLANT_DRAG_THRESHOLD_PX * PLANT_DRAG_THRESHOLD_PX) return;
+        beginPlantDrag(state, mv);
+      } else {
+        updatePlantDragPosition(state, mv);
+        updatePlantDragTarget(state, mv);
+      }
+    };
+
+    const onUp = (up) => {
+      if (up.pointerId !== state.pointerId) return;
+      cleanupListeners();
+      if (state.dragging) {
+        up.preventDefault?.();
+        up.stopPropagation?.();
+        completePlantDrop(state);
+      }
+    };
+
+    const onCancel = (cn) => {
+      if (cn.pointerId !== state.pointerId) return;
+      cleanupListeners();
+      if (state.dragging) abortPlantDrag(state);
+    };
+
+    const onEsc = (ke) => {
+      if (ke.key === "Escape" && state.dragging) {
+        ke.preventDefault();
+        ke.stopPropagation();
+        cleanupListeners();
+        abortPlantDrag(state);
+      }
+    };
+
+    const cleanupListeners = () => {
+      window.removeEventListener("pointermove", onMove, true);
+      window.removeEventListener("pointerup", onUp, true);
+      window.removeEventListener("pointercancel", onCancel, true);
+      window.removeEventListener("keydown", onEsc, true);
+    };
+
+    window.addEventListener("pointermove", onMove, true);
+    window.addEventListener("pointerup", onUp, true);
+    window.addEventListener("pointercancel", onCancel, true);
+    window.addEventListener("keydown", onEsc, true);
+  });
+}
+
+function beginPlantDrag(state, mv) {
+  state.dragging = true;
+  activePlantDrag = state;
+  try { state.slotEl.setPointerCapture(state.pointerId); } catch { /* */ }
+
+  state.slotEl.classList.add("broom-dragging");
+  state.plantEl.classList.remove("broom-plant-hovering");
+  document.documentElement.classList.add("broom-plant-dragging");
+
+  // Belt-and-suspenders against text/page selection during the drag:
+  //   • Clear any selection that may have begun during the 5px threshold.
+  //   • Block selectstart and the legacy HTML5 dragstart for the rest of
+  //     the gesture so even sites that force user-select: text can't paint
+  //     highlights as the cursor crosses paragraphs.
+  try { window.getSelection?.()?.removeAllRanges?.(); } catch { /* */ }
+  const swallow = (ev) => { ev.preventDefault(); };
+  state._suppressSelect = swallow;
+  document.addEventListener("selectstart", swallow, true);
+  document.addEventListener("dragstart", swallow, true);
+
+  const rect = state.plantEl.getBoundingClientRect();
+  const ghost = state.plantEl.cloneNode(true);
+  // Strip transient/animation classes so the ghost reads as a stable preview.
+  ghost.classList.remove(
+    "broom-plant-hovering",
+    "broom-plant-enter",
+    "broom-plant-watered",
+    "broom-plant-anim-gentle-sway"
+  );
+  // Remove any leftover particle/raindrop nodes that may have been cloned.
+  ghost.querySelectorAll(".broom-plant-particle, .broom-raindrop").forEach((n) => n.remove());
+  ghost.classList.add("broom-drag-ghost");
+  ghost.style.width = `${rect.width}px`;
+  ghost.style.height = `${rect.height}px`;
+
+  state.ghost = ghost;
+  state.offsetX = state.startX - rect.left;
+  state.offsetY = state.startY - rect.top;
+  document.documentElement.appendChild(ghost);
+  positionPlantGhost(ghost, mv.clientX - state.offsetX, mv.clientY - state.offsetY);
+}
+
+function positionPlantGhost(ghost, left, top) {
+  ghost.style.left = `${left}px`;
+  ghost.style.top = `${top}px`;
+}
+
+function releasePlantDragSelectionGuards(state) {
+  if (state && state._suppressSelect) {
+    document.removeEventListener("selectstart", state._suppressSelect, true);
+    document.removeEventListener("dragstart", state._suppressSelect, true);
+    state._suppressSelect = null;
+  }
+  // Clear any selection that crept in despite the guards (e.g., from a focus
+  // change in the middle of the drag).
+  try { window.getSelection?.()?.removeAllRanges?.(); } catch { /* */ }
+}
+
+function updatePlantDragPosition(state, mv) {
+  if (!state.ghost) return;
+  positionPlantGhost(state.ghost, mv.clientX - state.offsetX, mv.clientY - state.offsetY);
+}
+
+function updatePlantDragTarget(state, mv) {
+  if (!state.ghost) return;
+  // Hide ghost while hit-testing so elementFromPoint sees the slot below.
+  const prevVisibility = state.ghost.style.visibility;
+  state.ghost.style.visibility = "hidden";
+  const el = document.elementFromPoint(mv.clientX, mv.clientY);
+  state.ghost.style.visibility = prevVisibility;
+
+  let target = null;
+  if (el) {
+    const empty = el.closest && el.closest(".broom-empty-slot");
+    if (empty) target = empty;
+  }
+
+  if (target !== state.currentTarget) {
+    if (state.currentTarget) state.currentTarget.classList.remove("broom-drop-target");
+    state.currentTarget = target;
+    if (target) target.classList.add("broom-drop-target");
+  }
+}
+
+function completePlantDrop(state) {
+  const target = state.currentTarget;
+  if (target) target.classList.remove("broom-drop-target");
+
+  if (!target) { abortPlantDrag(state); return; }
+
+  const destHideId = target.getAttribute(EMPTY_SLOT_ATTR);
+  const destHide = appliedRules.find(
+    (r) => r.id === destHideId && r.payload && r.payload.kind === "hide"
+  );
+  if (!destHide) { abortPlantDrag(state); return; }
+
+  // Sanity: anchor still in DOM (mutations during drag).
+  const destAnchor = resolveSelector(destHide.selector.primary, destHide.selector.fallbacks);
+  if (!destAnchor) { abortPlantDrag(state); return; }
+
+  // Dropping on the slot the plant already lives in is a no-op.
+  const currentSourceId = state.rule.payload && state.rule.payload.sourceRuleId;
+  if (currentSourceId && currentSourceId === destHide.id) { abortPlantDrag(state); return; }
+
+  void performPlantMove(state, destHide);
+}
+
+async function performPlantMove(state, destHide) {
+  const oldRule = state.rule;
+  const newBox = (destHide.payload && destHide.payload.originalBox) || null;
+  // Re-fit the plant to the destination's footprint by recomputing the size
+  // class. The slot itself is already capped by `originalBox` in applyPlant;
+  // updating `plant.size` rescales the SVG (.broom-plant-sm/md/lg widths) so
+  // a small succulent grows when moved to a large slot and vice versa.
+  const oldPlant = (oldRule.payload && oldRule.payload.plant) || {};
+  const nextPlant = { ...oldPlant, size: plantSizeForBox(newBox) };
+  const updated = {
+    ...oldRule,
+    selector: {
+      primary: destHide.selector.primary,
+      fallbacks: Array.isArray(destHide.selector.fallbacks) ? [...destHide.selector.fallbacks] : [],
+      semantic: destHide.selector.semantic || ""
+    },
+    payload: {
+      ...oldRule.payload,
+      sourceRuleId: destHide.id,
+      originalBox: newBox,
+      plant: nextPlant
+    }
+  };
+
+  // Tear down ghost + drag chrome before mutating the DOM.
+  if (state.ghost) state.ghost.remove();
+  state.ghost = null;
+  state.slotEl.classList.remove("broom-dragging");
+  state.slotEl._broomDragJustEnded = true;
+  document.documentElement.classList.remove("broom-plant-dragging");
+  releasePlantDragSelectionGuards(state);
+
+  // Remove old plant slot DOM and replace it with one re-applied at the new anchor.
+  removeRule(oldRule.id);
+  const idx = appliedRules.findIndex((r) => r.id === oldRule.id);
+  if (idx >= 0) appliedRules[idx] = updated;
+  applyPlant(updated, { enterAnimation: false });
+  // Delay sound to align the "thunk" with the impact-squash peak of the
+  // drop animation (~184ms into broom-plant-settle-body). Without this the
+  // audio fires while the pot is still mid-air and reads as out of sync.
+  setTimeout(playMovePotSound, 250);
+
+  // Drop-into-new-home animation on the new slot, plus a dust poof from the
+  // pot base. Particle --delay (200ms) targets the impact moment of the body
+  // squash keyframe (~184ms in) so dust visibly bursts on the "thunk".
+  const newSlot = document.querySelector(
+    `[${INJECTED_ATTR}="${updated.id.replace(/"/g, '\\"')}"]`
+  );
+  if (newSlot) {
+    newSlot.classList.add("broom-plant-settle");
+    const dust = [
+      { px: -26, py: -6,  color: "#8a6a3a", dur: 380, delay: 190 },
+      { px: -14, py: -12, color: "#a07a48", dur: 420, delay: 210 },
+      { px:  14, py: -12, color: "#a07a48", dur: 420, delay: 210 },
+      { px:  26, py: -6,  color: "#8a6a3a", dur: 380, delay: 190 },
+      { px: -18, py:  4,  color: "#6b4423", dur: 320, delay: 230 },
+      { px:  18, py:  4,  color: "#6b4423", dur: 320, delay: 230 }
+    ];
+    dust.forEach(({ px, py, color, dur, delay }) => {
+      const p = document.createElement("span");
+      p.className = "broom-plant-particle broom-plant-dust";
+      p.style.cssText = `--px:${px}px;--py:${py}px;background:${color};--dur:${dur}ms;--delay:${delay}ms`;
+      newSlot.appendChild(p);
+      p.addEventListener("animationend", () => p.remove(), { once: true });
+    });
+    setTimeout(() => newSlot.classList.remove("broom-plant-settle"), 580);
+  }
+
+  if (activeMode === "plant") renderEmptySlotAffordances();
+
+  activePlantDrag = null;
+
+  await upsertRuleLocal(updated);
+  void trackEvent("plant_moved");
+}
+
+function abortPlantDrag(state) {
+  if (state.currentTarget) state.currentTarget.classList.remove("broom-drop-target");
+  state.currentTarget = null;
+  state.slotEl.classList.remove("broom-dragging");
+  // Mark for click-suppression and self-clear in case the browser doesn't
+  // dispatch a synthetic click after the drag (varies by platform).
+  state.slotEl._broomDragJustEnded = true;
+  setTimeout(() => { delete state.slotEl._broomDragJustEnded; }, 300);
+  document.documentElement.classList.remove("broom-plant-dragging");
+  releasePlantDragSelectionGuards(state);
+
+  if (state.ghost) {
+    const ghost = state.ghost;
+    // Snap back toward the source slot if it's still in the DOM.
+    const slotRect = state.slotEl.isConnected ? state.slotEl.getBoundingClientRect() : null;
+    if (slotRect && slotRect.width > 0 && slotRect.height > 0) {
+      ghost.classList.add("broom-drag-ghost-returning");
+      ghost.style.left = `${slotRect.left + (slotRect.width - ghost.offsetWidth) / 2}px`;
+      ghost.style.top = `${slotRect.top + (slotRect.height - ghost.offsetHeight)}px`;
+      ghost.style.opacity = "0";
+      const done = () => ghost.remove();
+      ghost.addEventListener("transitionend", done, { once: true });
+      setTimeout(done, 260);
+    } else {
+      ghost.remove();
+    }
+  }
+  state.ghost = null;
+  if (activePlantDrag === state) activePlantDrag = null;
+}
+
+function cancelActivePlantDrag() {
+  if (!activePlantDrag) return;
+  abortPlantDrag(activePlantDrag);
 }
 
 function removeRule(ruleId) {
@@ -574,6 +954,7 @@ function startMode(mode) {
 
 function stopMode() {
   if (!activeMode) return;
+  cancelActivePlantDrag();
   const prev = activeMode;
   activeMode = null;
   pickerTarget = null;
@@ -1478,6 +1859,206 @@ function pickerStylesheet() {
       animation: broom-plant-wiggle 600ms ease-out !important;
     }
 
+    /* ── Handwritten name-note ───────────────── */
+    /* A small paper-tag label that hangs just below the pot when the user
+       hovers a plant. Hidden while any Brooming/Planting/Restoring mode is
+       active (the gate is html:not([data-broom-mode])) so it never piles
+       on top of the broom-mode selector tag or the plant-mode "Plant here"
+       affordance. Hovering the note itself slightly enlarges it and fades
+       in a second line ("planted N days ago"). */
+    .broom-plant-note {
+      all: initial !important;
+      position: absolute !important;
+      left: 50% !important;
+      top: calc(100% + 2px) !important;
+      transform: translateX(-50%) translateY(-4px) rotate(-2deg) !important;
+      transform-origin: top center !important;
+      opacity: 0 !important;
+      pointer-events: none !important;
+      /* Bottom padding is generous because handwriting fonts (Caveat,
+         Bradley Hand, etc.) have long descenders — names like "Daisies"
+         and the always-present "y" in "days ago" would otherwise sit
+         flush against the note's bottom edge. */
+      padding: 5px 12px 8px !important;
+      border-radius: 8px !important;
+      background: rgba(253, 251, 240, 0.96) !important;
+      box-shadow: 0 2px 6px rgba(15,23,42,0.18) !important;
+      font-family: 'Caveat', 'Bradley Hand', 'Patrick Hand', 'Marker Felt', 'Segoe Script', cursive !important;
+      color: #2f3a2a !important;
+      text-align: center !important;
+      white-space: nowrap !important;
+      transition:
+        opacity 160ms ease,
+        transform 180ms ease,
+        padding 180ms ease !important;
+      z-index: 2 !important;
+    }
+    .broom-plant-note-name {
+      display: block !important;
+      font-size: 16px !important;
+      line-height: 1.25 !important;
+      letter-spacing: 0.01em !important;
+    }
+    .broom-plant-note-date {
+      display: block !important;
+      font-size: 12px !important;
+      line-height: 1.4 !important;
+      color: #5a6650 !important;
+      opacity: 0 !important;
+      max-height: 0 !important;
+      overflow: hidden !important;
+      margin-top: 0 !important;
+      transition:
+        opacity 160ms ease,
+        max-height 200ms ease,
+        margin-top 200ms ease !important;
+    }
+    /* Reveal the note on plant hover — only when no mode is active. */
+    html:not([data-broom-mode]) .broom-plant-slot:hover .broom-plant-note {
+      opacity: 1 !important;
+      transform: translateX(-50%) translateY(0) rotate(-2deg) !important;
+      pointer-events: auto !important;
+    }
+    /* Expanded state: hover the note itself. */
+    html:not([data-broom-mode]) .broom-plant-slot .broom-plant-note:hover {
+      transform: translateX(-50%) translateY(0) rotate(-1deg) scale(1.08) !important;
+      padding: 7px 14px 10px !important;
+    }
+    html:not([data-broom-mode]) .broom-plant-slot .broom-plant-note:hover .broom-plant-note-date {
+      opacity: 1 !important;
+      /* 12px * 1.4 line-height = 16.8px text box, plus a little slack
+         so the descender of "y" in "days" / "yesterday" never clips. */
+      max-height: 24px !important;
+      margin-top: 2px !important;
+    }
+    /* While dragging a plant, suppress the note so it doesn't trail the
+       ghost or flash on the source slot. */
+    .broom-plant-slot.broom-dragging .broom-plant-note,
+    html.broom-plant-dragging .broom-plant-note {
+      opacity: 0 !important;
+      pointer-events: none !important;
+      transition: opacity 80ms ease !important;
+    }
+
+    /* ── Plant drag-and-drop ─────────────────── */
+    /* Source slot while being dragged: dim it so the user sees the plant has
+       lifted off without losing the original footprint as a reference. */
+    .broom-plant-slot.broom-dragging {
+      opacity: 0.32 !important;
+      transition: opacity 140ms ease !important;
+      touch-action: none !important;
+    }
+    .broom-plant-slot.broom-dragging .broom-plant {
+      filter: drop-shadow(0 2px 3px rgba(15,23,42,0.12)) !important;
+    }
+    /* While any plant drag is active, suppress the existing custom shovel
+       cursor on empty slots so the browser shows the default grabbing cursor
+       and the drop target reads as inviting rather than fiddly. Also kill
+       text-selection across the page so dragging over paragraphs doesn't
+       leave highlights behind. */
+    html.broom-plant-dragging, html.broom-plant-dragging * {
+      cursor: grabbing !important;
+      user-select: none !important;
+      -webkit-user-select: none !important;
+      -moz-user-select: none !important;
+      -ms-user-select: none !important;
+      -webkit-touch-callout: none !important;
+    }
+    html.broom-plant-dragging .broom-empty-slot {
+      outline-color: rgba(80,160,100,0.65) !important;
+      background: rgba(80,160,100,0.10) !important;
+    }
+    /* Make the planted slot show a grab cursor in plant mode to advertise
+       draggability before the user even attempts it. */
+    html[data-broom-mode="plant"] .broom-plant-slot {
+      cursor: grab !important;
+    }
+    /* Highlighted drop target: stronger green ring + soft glow + lift. */
+    .broom-empty-slot.broom-drop-target {
+      outline-color: rgba(80,160,100,0.95) !important;
+      background: rgba(80,160,100,0.22) !important;
+      box-shadow:
+        0 0 0 4px rgba(80,160,100,0.18),
+        0 12px 28px rgba(56,161,105,0.32) !important;
+      transform: translateY(-2px) scale(1.02) !important;
+      animation: none !important;
+    }
+    .broom-empty-slot.broom-drop-target .broom-empty-slot-label {
+      opacity: 1 !important;
+      transform: translateX(-50%) translateY(0) !important;
+    }
+    /* The drag ghost: a clone of the plant, positioned by JS to follow the
+       cursor. pointer-events:none keeps it from blocking hit-testing. */
+    .broom-drag-ghost {
+      position: fixed !important;
+      pointer-events: none !important;
+      z-index: 2147483647 !important;
+      margin: 0 !important;
+      opacity: 0.92 !important;
+      transform: scale(1.06) rotate(-2deg) !important;
+      transform-origin: bottom center !important;
+      filter: drop-shadow(0 12px 24px rgba(15,23,42,0.32)) !important;
+      will-change: left, top, opacity, transform !important;
+      transition: transform 120ms ease, filter 120ms ease !important;
+    }
+    /* Safety: nuke any inherited animations on cloned children of the ghost. */
+    .broom-drag-ghost, .broom-drag-ghost * {
+      animation: none !important;
+    }
+    .broom-drag-ghost-returning {
+      transition: left 220ms cubic-bezier(.34,1.56,.64,1),
+                  top  220ms cubic-bezier(.34,1.56,.64,1),
+                  opacity 220ms ease,
+                  transform 220ms ease !important;
+      transform: scale(1) rotate(0deg) !important;
+    }
+    /* Drop-into-new-home animation. Triggered when a plant lands at a new
+       slot via drag-and-drop; visually matches the move-pot.m4a sound.
+         · .broom-plant body: falls from above with an impact squash.
+         · .broom-plant-foliage: whips/wobbles after the impact, then resumes sway.
+         · Dust particles (.broom-plant-particle) are spawned in JS to burst
+           from the pot base at the impact moment.
+       Higher specificity than the default sway/sm/md/lg rules so the
+       transition cleanly overrides them while the class is present. */
+    .broom-plant-slot.broom-plant-settle > .broom-plant {
+      animation: broom-plant-settle-body 460ms cubic-bezier(.2,1.6,.32,1) both !important;
+      transform-origin: bottom center !important;
+    }
+    .broom-plant-slot.broom-plant-settle > .broom-plant > .broom-plant-foliage {
+      animation:
+        broom-plant-settle-foliage 540ms cubic-bezier(.18,1.2,.36,1.05) both,
+        broom-plant-sway 5.5s ease-in-out infinite 540ms !important;
+      transform-origin: bottom center !important;
+    }
+    @keyframes broom-plant-settle-body {
+      0%   { transform: translateY(-16px) scale(0.94, 1.10); }
+      40%  { transform: translateY(2px)   scale(1.14, 0.86); }   /* impact squash */
+      58%  { transform: translateY(-4px)  scale(0.96, 1.05); }
+      76%  { transform: translateY(1px)   scale(1.02, 0.99); }
+      90%  { transform: translateY(0)     scale(1.005, 0.998); }
+      100% { transform: translateY(0)     scale(1, 1); }
+    }
+    @keyframes broom-plant-settle-foliage {
+      0%   { transform: rotate(-2deg) translateY(-2px) scale(0.97); }
+      28%  { transform: rotate(6deg)   translateY(-1px) scale(1.03); }   /* whip back */
+      48%  { transform: rotate(-5deg)  translateY(0)    scale(1.015); }
+      66%  { transform: rotate(3deg)   translateY(0)    scale(1.005); }
+      82%  { transform: rotate(-1.5deg) translateY(0)   scale(1); }
+      100% { transform: rotate(0)      translateY(0)    scale(1); }
+    }
+    /* Soil/dust particles use the existing .broom-plant-particle keyframe;
+       these tweaks shape them as a small impact poof rather than an upward
+       eruption: smaller, rounder, with a soft brown edge. */
+    .broom-plant-particle.broom-plant-dust {
+      width: 4px !important;
+      height: 4px !important;
+      margin-left: -2px !important;
+      margin-bottom: -2px !important;
+      bottom: 14% !important;
+      box-shadow: 0 0 2px rgba(74,47,26,0.45) !important;
+      opacity: 0.92 !important;
+    }
+
     /* ── Plant toast ─────────────────────────── */
     #${PLANT_TOAST_ID} {
       all: initial !important;
@@ -1663,6 +2244,12 @@ function pickerStylesheet() {
       #${LAUNCHER_WRAP_ID} .broom-fan-chip,
       .broom-empty-slot, .broom-empty-slot-label, .broom-empty-slot-soil,
       .broom-plant, .broom-plant-enter, .broom-plant-anim-gentle-sway, .broom-plant-particle, .broom-plant-hovering, .broom-raindrop, .broom-plant-watered,
+      .broom-plant-note, .broom-plant-note-name, .broom-plant-note-date,
+      .broom-plant-slot.broom-dragging, .broom-empty-slot.broom-drop-target,
+      .broom-drag-ghost, .broom-drag-ghost-returning,
+      .broom-plant-slot.broom-plant-settle,
+      .broom-plant-slot.broom-plant-settle > .broom-plant,
+      .broom-plant-slot.broom-plant-settle > .broom-plant > .broom-plant-foliage,
       .broom-restore-overlay, .broom-restore-overlay.broom-restore-leaving, .broom-restore-plus,
       #${UNDO_TOAST_ID}, #${UNDO_TOAST_ID}.but-leaving,
       #${PLANT_TOAST_ID}, #${PLANT_TOAST_ID}.bpt-leaving {
@@ -1753,6 +2340,15 @@ function playPlantSound() {
   try {
     const audio = new Audio(chrome.runtime.getURL("pop.mp3"));
     audio.volume = 0.5;
+    audio.play().catch(() => {});
+  } catch (_) {}
+}
+
+function playMovePotSound() {
+  if (cachedPrefs.soundEnabled === false) return;
+  try {
+    const audio = new Audio(chrome.runtime.getURL("move-pot.m4a"));
+    audio.volume = 0.55;
     audio.play().catch(() => {});
   } catch (_) {}
 }
