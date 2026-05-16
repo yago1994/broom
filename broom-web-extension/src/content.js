@@ -784,36 +784,12 @@ async function performPlantMove(state, destHide) {
   const idx = appliedRules.findIndex((r) => r.id === oldRule.id);
   if (idx >= 0) appliedRules[idx] = updated;
   applyPlant(updated, { enterAnimation: false });
-  // Delay sound to align the "thunk" with the impact-squash peak of the
-  // drop animation (~184ms into broom-plant-settle-body). Without this the
-  // audio fires while the pot is still mid-air and reads as out of sync.
-  setTimeout(playMovePotSound, 250);
 
-  // Drop-into-new-home animation on the new slot, plus a dust poof from the
-  // pot base. Particle --delay (200ms) targets the impact moment of the body
-  // squash keyframe (~184ms in) so dust visibly bursts on the "thunk".
+  // Play the drop sequence (settle + dust + delayed sound) on the destination.
   const newSlot = document.querySelector(
     `[${INJECTED_ATTR}="${updated.id.replace(/"/g, '\\"')}"]`
   );
-  if (newSlot) {
-    newSlot.classList.add("broom-plant-settle");
-    const dust = [
-      { px: -26, py: -6,  color: "#8a6a3a", dur: 380, delay: 190 },
-      { px: -14, py: -12, color: "#a07a48", dur: 420, delay: 210 },
-      { px:  14, py: -12, color: "#a07a48", dur: 420, delay: 210 },
-      { px:  26, py: -6,  color: "#8a6a3a", dur: 380, delay: 190 },
-      { px: -18, py:  4,  color: "#6b4423", dur: 320, delay: 230 },
-      { px:  18, py:  4,  color: "#6b4423", dur: 320, delay: 230 }
-    ];
-    dust.forEach(({ px, py, color, dur, delay }) => {
-      const p = document.createElement("span");
-      p.className = "broom-plant-particle broom-plant-dust";
-      p.style.cssText = `--px:${px}px;--py:${py}px;background:${color};--dur:${dur}ms;--delay:${delay}ms`;
-      newSlot.appendChild(p);
-      p.addEventListener("animationend", () => p.remove(), { once: true });
-    });
-    setTimeout(() => newSlot.classList.remove("broom-plant-settle"), 580);
-  }
+  playPlantDropAnimation(newSlot);
 
   if (activeMode === "plant") renderEmptySlotAffordances();
 
@@ -821,6 +797,37 @@ async function performPlantMove(state, destHide) {
 
   await upsertRuleLocal(updated);
   void trackEvent("plant_moved");
+}
+
+// Shared drop choreography: settle keyframe + dust poof from the pot base +
+// delayed move-pot sound (so the "thunk" lands with the impact squash).
+// Used both for cross-slot moves and for cancelled drags that land back on
+// the original slot, so the audiovisual signature of "a pot landing" is
+// consistent regardless of where it lands.
+function playPlantDropAnimation(slot) {
+  if (!slot || !slot.isConnected) return;
+  // Restart cleanly if a previous settle is still in flight on this slot.
+  slot.classList.remove("broom-plant-settle");
+  void slot.offsetWidth;
+  slot.classList.add("broom-plant-settle");
+
+  [
+    { px: -26, py: -6,  color: "#8a6a3a", dur: 380, delay: 190 },
+    { px: -14, py: -12, color: "#a07a48", dur: 420, delay: 210 },
+    { px:  14, py: -12, color: "#a07a48", dur: 420, delay: 210 },
+    { px:  26, py: -6,  color: "#8a6a3a", dur: 380, delay: 190 },
+    { px: -18, py:  4,  color: "#6b4423", dur: 320, delay: 230 },
+    { px:  18, py:  4,  color: "#6b4423", dur: 320, delay: 230 }
+  ].forEach(({ px, py, color, dur, delay }) => {
+    const p = document.createElement("span");
+    p.className = "broom-plant-particle broom-plant-dust";
+    p.style.cssText = `--px:${px}px;--py:${py}px;background:${color};--dur:${dur}ms;--delay:${delay}ms`;
+    slot.appendChild(p);
+    p.addEventListener("animationend", () => p.remove(), { once: true });
+  });
+
+  setTimeout(playMovePotSound, 50);
+  setTimeout(() => slot.classList.remove("broom-plant-settle"), 580);
 }
 
 function abortPlantDrag(state) {
@@ -834,23 +841,27 @@ function abortPlantDrag(state) {
   document.documentElement.classList.remove("broom-plant-dragging");
   releasePlantDragSelectionGuards(state);
 
+  // Ghost fades out quickly wherever the user released — the drop animation
+  // on the source slot is the primary "your pot landed back home" feedback,
+  // so we don't need the long snap-back flight (which used to leave two
+  // overlapping plants visible for ~220ms).
   if (state.ghost) {
     const ghost = state.ghost;
-    // Snap back toward the source slot if it's still in the DOM.
-    const slotRect = state.slotEl.isConnected ? state.slotEl.getBoundingClientRect() : null;
-    if (slotRect && slotRect.width > 0 && slotRect.height > 0) {
-      ghost.classList.add("broom-drag-ghost-returning");
-      ghost.style.left = `${slotRect.left + (slotRect.width - ghost.offsetWidth) / 2}px`;
-      ghost.style.top = `${slotRect.top + (slotRect.height - ghost.offsetHeight)}px`;
-      ghost.style.opacity = "0";
-      const done = () => ghost.remove();
-      ghost.addEventListener("transitionend", done, { once: true });
-      setTimeout(done, 260);
-    } else {
-      ghost.remove();
-    }
+    ghost.style.transition = "opacity 140ms ease, transform 140ms ease";
+    ghost.style.opacity = "0";
+    ghost.style.transform = "scale(0.88) rotate(-1deg)";
+    const removeGhost = () => ghost.remove();
+    ghost.addEventListener("transitionend", removeGhost, { once: true });
+    setTimeout(removeGhost, 200);
   }
   state.ghost = null;
+
+  // Replay the same drop sequence on the source slot so a cancelled drag
+  // feels consistent with a successful move: the pot always "lands".
+  if (state.slotEl.isConnected) {
+    playPlantDropAnimation(state.slotEl);
+  }
+
   if (activePlantDrag === state) activePlantDrag = null;
 }
 
@@ -2048,13 +2059,17 @@ function pickerStylesheet() {
     }
     /* Soil/dust particles use the existing .broom-plant-particle keyframe;
        these tweaks shape them as a small impact poof rather than an upward
-       eruption: smaller, rounder, with a soft brown edge. */
+       eruption: smaller, rounder, with a soft brown edge. Anchored at the
+       slot's bottom edge (= pot base, since .broom-plant-slot is
+       align-items: flex-end and the pot is the last child of .broom-plant),
+       so the burst reads as dust kicked up where the pot meets the ground
+       rather than soil erupting from inside the pot. */
     .broom-plant-particle.broom-plant-dust {
       width: 4px !important;
       height: 4px !important;
       margin-left: -2px !important;
       margin-bottom: -2px !important;
-      bottom: 14% !important;
+      bottom: 0 !important;
       box-shadow: 0 0 2px rgba(74,47,26,0.45) !important;
       opacity: 0.92 !important;
     }
