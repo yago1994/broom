@@ -106,7 +106,7 @@ async function clearRulesForHost(hostname) {
 // ── Prefs (sound on/off, etc.) ───────────────────────────────────────────────
 
 const PREFS_KEY = "prefs";
-const DEFAULT_PREFS = { soundEnabled: true, showChanges: true };
+const DEFAULT_PREFS = { soundEnabled: true, showChanges: true, suspendKey: "KeyB", activePackId: null };
 let cachedPrefs = { ...DEFAULT_PREFS };
 
 async function loadPrefs() {
@@ -120,6 +120,413 @@ async function loadPrefs() {
 async function setPref(key, value) {
   cachedPrefs = { ...cachedPrefs, [key]: value };
   await chrome.storage.local.set({ [PREFS_KEY]: cachedPrefs });
+}
+
+// ── Custom bloom packs ───────────────────────────────────────────────────────
+//
+// Users can drop a folder of SVGs into Settings → Blooms; the pack becomes the
+// active plant pool when selected (built-in pool returns when "Default" is
+// active or the active pack is deleted). Each SVG is sanitized at upload time
+// — we strip <script>, <foreignObject>, on* handlers, javascript: URLs, and
+// any non-fragment external href so a malicious pack can't run code on the
+// host page.
+//
+// Storage layout:
+//   customPacksIndex   → [{ id, name, count, createdAt, thumb }]
+//   customPack:${id}   → { [plantId]: svgString }
+//
+// At runtime, all packs are loaded into the existing PLANT_SVGS/PLANT_NAMES
+// registries under namespaced kinds ("custom:packId:plantId"), so the
+// renderer at applyPlant() doesn't need to know packs exist. The "active"
+// pack only affects which kinds chooseRandomPlant draws from.
+
+const CUSTOM_PACKS_INDEX_KEY = "customPacksIndex";
+const CUSTOM_PACK_PREFIX = "customPack:";
+const MAX_PACK_FILES = 50;
+const MAX_PACK_BYTES = 2 * 1024 * 1024; // ~2MB per pack
+const BROOMPACK_FORMAT = "broompack";
+const BROOMPACK_VERSION = 1;
+
+let customPacksIndex = [];
+// packId → { plantId → { svg, name } }
+//
+// Older saves stored a bare svg string under each plantId. normalizePackBlobs
+// (called on load) coerces both shapes into the { svg, name } record so the
+// rest of the code can assume one schema.
+let customPacksData = {};
+
+function customKind(packId, plantId) {
+  return `custom:${packId}:${plantId}`;
+}
+
+// Prettify a raw filename into a display label: drop the extension, replace
+// underscores/dashes with spaces, collapse whitespace, capitalize the first
+// letter. "fiddle-leaf.svg" → "Fiddle leaf". Returns "" for empty/cryptic
+// input so callers can fall back to the pack name.
+function prettifyPlantName(filename) {
+  if (typeof filename !== "string") return "";
+  let s = filename.replace(/\.svg$/i, "").replace(/[_\-]+/g, " ").replace(/\s+/g, " ").trim();
+  if (!s) return "";
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
+function normalizePackBlobs(raw) {
+  const out = {};
+  if (!raw || typeof raw !== "object") return out;
+  for (const [k, v] of Object.entries(raw)) {
+    if (typeof v === "string") {
+      out[k] = { svg: v, name: "" };
+    } else if (v && typeof v === "object" && typeof v.svg === "string") {
+      out[k] = { svg: v.svg, name: typeof v.name === "string" ? v.name : "" };
+    }
+  }
+  return out;
+}
+
+// Pull the active pack's kinds for the picker. Returns null when none is
+// active so the caller falls back to the built-in pool.
+function activePackKinds() {
+  const id = cachedPrefs.activePackId;
+  if (!id) return null;
+  const data = customPacksData[id];
+  if (!data) return null;
+  const kinds = Object.keys(data).map((plantId) => customKind(id, plantId));
+  return kinds.length ? kinds : null;
+}
+
+// Register a pack's SVGs into PLANT_SVGS/PLANT_NAMES. Idempotent — calling
+// again with the same pack overwrites prior entries cleanly.
+//
+// Per-plant `name` (from the SVG filename at upload time) is preferred; we
+// fall back to the pack name so the hover label always reads like a real
+// thing, never an empty string.
+function registerPackInRegistry(packId, packMeta, blobs) {
+  const fallback = packMeta?.name || "Custom plant";
+  for (const [plantId, entry] of Object.entries(blobs)) {
+    const k = customKind(packId, plantId);
+    PLANT_SVGS[k] = entry.svg;
+    PLANT_NAMES[k] = entry.name && entry.name.trim() ? entry.name : fallback;
+  }
+}
+
+function unregisterPackFromRegistry(packId) {
+  const prefix = `custom:${packId}:`;
+  for (const k of Object.keys(PLANT_SVGS)) {
+    if (k.startsWith(prefix)) {
+      delete PLANT_SVGS[k];
+      delete PLANT_NAMES[k];
+    }
+  }
+}
+
+async function loadAllCustomPacks() {
+  try {
+    const r = await chrome.storage.local.get(CUSTOM_PACKS_INDEX_KEY);
+    customPacksIndex = Array.isArray(r[CUSTOM_PACKS_INDEX_KEY]) ? r[CUSTOM_PACKS_INDEX_KEY] : [];
+  } catch { customPacksIndex = []; }
+
+  if (!customPacksIndex.length) { customPacksData = {}; return; }
+
+  const keys = customPacksIndex.map((p) => CUSTOM_PACK_PREFIX + p.id);
+  let blobs = {};
+  try { blobs = await chrome.storage.local.get(keys); } catch { blobs = {}; }
+
+  customPacksData = {};
+  for (const pack of customPacksIndex) {
+    const raw = blobs[CUSTOM_PACK_PREFIX + pack.id];
+    if (raw && typeof raw === "object") {
+      const data = normalizePackBlobs(raw);
+      customPacksData[pack.id] = data;
+      registerPackInRegistry(pack.id, pack, data);
+    }
+  }
+
+  // Active pack referenced but missing → reset to Default so the user never
+  // ends up planting fallback pothoses without knowing why.
+  if (cachedPrefs.activePackId && !customPacksData[cachedPrefs.activePackId]) {
+    await setPref("activePackId", null);
+  }
+}
+
+// SVG sanitizer. Returns a cleaned SVG string or null if the input doesn't
+// parse as SVG. Aggressive allowlist — we'd rather reject a fancy SVG than
+// let a script element through to the host page.
+const SVG_TAG_ALLOWLIST = new Set([
+  "svg", "g", "defs", "title", "desc", "metadata",
+  "path", "rect", "circle", "ellipse", "line", "polyline", "polygon",
+  "linearGradient", "radialGradient", "stop",
+  "pattern", "clipPath", "mask", "use", "symbol",
+  "text", "tspan", "textPath", "image",
+  "filter", "feGaussianBlur", "feOffset", "feMerge", "feMergeNode",
+  "feColorMatrix", "feFlood", "feComposite", "feMorphology", "feBlend",
+  "feTurbulence", "feDisplacementMap", "feSpecularLighting", "feDiffuseLighting",
+  "feDistantLight", "fePointLight", "feSpotLight",
+  "animate", "animateTransform", "animateMotion", "mpath", "set"
+]);
+
+const SVG_URL_ATTRS = new Set(["href", "xlink:href", "src"]);
+
+function isSafeUrl(value) {
+  if (typeof value !== "string") return false;
+  const v = value.trim();
+  if (v.startsWith("#")) return true;
+  if (/^data:image\//i.test(v)) return true;
+  return false;
+}
+
+function sanitizeSvg(text) {
+  if (typeof text !== "string" || !text.trim()) return null;
+  let doc;
+  try {
+    doc = new DOMParser().parseFromString(text, "image/svg+xml");
+  } catch { return null; }
+  // image/svg+xml puts a <parsererror> at the root on failure
+  if (doc.querySelector("parsererror")) return null;
+
+  const root = doc.documentElement;
+  if (!root || root.tagName.toLowerCase() !== "svg") return null;
+
+  // Walk the tree depth-first, mutating in place. We collect nodes first
+  // because removing during traversal would skip siblings.
+  const all = [];
+  (function collect(n) {
+    all.push(n);
+    for (const c of Array.from(n.children)) collect(c);
+  })(root);
+
+  for (const node of all) {
+    if (!node.isConnected) continue;
+    const tag = node.tagName;
+    // tagName casing: HTML parsers lowercase, XML parsers preserve. We compare
+    // case-insensitively against the allowlist.
+    const lower = tag.toLowerCase();
+    // Find canonical-cased match (e.g. "lineargradient" → "linearGradient").
+    let allowed = false;
+    if (SVG_TAG_ALLOWLIST.has(lower)) allowed = true;
+    else {
+      for (const t of SVG_TAG_ALLOWLIST) {
+        if (t.toLowerCase() === lower) { allowed = true; break; }
+      }
+    }
+    if (!allowed) { node.remove(); continue; }
+
+    for (const attr of Array.from(node.attributes)) {
+      const name = attr.name;
+      const lname = name.toLowerCase();
+      const value = attr.value;
+
+      // Strip every on* handler attribute.
+      if (lname.startsWith("on")) { node.removeAttribute(name); continue; }
+
+      // Strip URL-carrying attributes that point anywhere risky.
+      if (SVG_URL_ATTRS.has(lname) && !isSafeUrl(value)) {
+        node.removeAttribute(name);
+        continue;
+      }
+
+      // Reject any attribute value that contains a javascript: URL anywhere.
+      if (/javascript:/i.test(value)) { node.removeAttribute(name); continue; }
+
+      // <animate>/<set> can mutate dangerous attributes — restrict the names
+      // they target so an animation can't, say, animate-set an `href` into
+      // a javascript: URL post-load.
+      if ((lower === "animate" || lower === "set" || lower === "animatetransform") && lname === "attributename") {
+        if (/^on/i.test(value) || /href/i.test(value)) { node.removeAttribute(name); continue; }
+      }
+
+      // Inline style: strip if it tries to load external resources or use
+      // CSS expressions. Cheap-and-safe approach: drop the whole style attr
+      // when anything suspicious is present.
+      if (lname === "style" && /(expression\s*\(|url\s*\(\s*(?!#))/i.test(value)) {
+        node.removeAttribute(name);
+      }
+    }
+  }
+
+  // Normalize the root <svg>: ensure a viewBox so the plant scales to its
+  // slot, drop fixed width/height so it isn't pinned to author dimensions.
+  if (!root.getAttribute("viewBox")) {
+    const w = parseFloat(root.getAttribute("width")) || 100;
+    const h = parseFloat(root.getAttribute("height")) || 100;
+    root.setAttribute("viewBox", `0 0 ${w} ${h}`);
+  }
+  root.removeAttribute("width");
+  root.removeAttribute("height");
+  root.setAttribute("preserveAspectRatio", root.getAttribute("preserveAspectRatio") || "xMidYMid meet");
+  root.setAttribute("aria-hidden", "true");
+
+  try { return new XMLSerializer().serializeToString(root); }
+  catch { return null; }
+}
+
+// Slugify a folder name into a safe pack id. Lowercase, hyphens, no leading/
+// trailing dashes. We append a short random suffix so two packs with the same
+// name can coexist.
+function slugifyPackName(name) {
+  const base = String(name || "pack")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 32) || "pack";
+  const suffix = Math.random().toString(36).slice(2, 7);
+  return `${base}-${suffix}`;
+}
+
+// Save a new pack from a list of { plantId, name, svg } entries. The caller
+// is responsible for sanitizing first; this is just storage. Returns the
+// stored pack metadata.
+async function saveCustomPack({ name, entries }) {
+  const id = slugifyPackName(name);
+  const blobs = {};
+  for (const e of entries) {
+    blobs[e.plantId] = { svg: e.svg, name: typeof e.name === "string" ? e.name : "" };
+  }
+  const meta = {
+    id,
+    name: String(name || "Custom pack").slice(0, 64),
+    count: entries.length,
+    createdAt: Date.now(),
+    thumb: entries[0]?.svg || ""
+  };
+  customPacksIndex = [...customPacksIndex, meta];
+  customPacksData[id] = blobs;
+  registerPackInRegistry(id, meta, blobs);
+  await chrome.storage.local.set({
+    [CUSTOM_PACKS_INDEX_KEY]: customPacksIndex,
+    [CUSTOM_PACK_PREFIX + id]: blobs
+  });
+  return meta;
+}
+
+// Build the JSON payload for a .broompack export. The format is intentionally
+// minimal — name + entries list of { id, name, svg } — and versioned so we
+// can extend it without breaking older builds.
+function buildBroompackPayload(pack, blobs) {
+  return {
+    format: BROOMPACK_FORMAT,
+    version: BROOMPACK_VERSION,
+    type: "plants",
+    name: pack.name,
+    createdAt: pack.createdAt || Date.now(),
+    entries: Object.entries(blobs).map(([id, entry]) => ({
+      id,
+      name: entry.name || "",
+      svg: entry.svg
+    }))
+  };
+}
+
+function exportPackAsBroompack(packId) {
+  const pack = customPacksIndex.find((p) => p.id === packId);
+  const blobs = customPacksData[packId];
+  if (!pack || !blobs) return;
+  const payload = buildBroompackPayload(pack, blobs);
+  const json = JSON.stringify(payload, null, 2);
+  const blob = new Blob([json], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  // Keep filenames filesystem-safe; the user can rename on save if they want.
+  const safe = String(pack.name || "pack").replace(/[^a-zA-Z0-9 _\-]/g, "").trim() || "pack";
+  a.download = `${safe}.broompack`;
+  document.documentElement.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 0);
+}
+
+// Parse and validate a dropped .broompack file. The SVGs are re-sanitized
+// here — we never trust a file just because it claims our format. Returns
+// { name, entries } ready to hand to saveCustomPack.
+async function importBroompackFile(file) {
+  let parsed;
+  try {
+    const text = await file.text();
+    parsed = JSON.parse(text);
+  } catch {
+    throw new Error("That doesn't look like a valid .broompack file.");
+  }
+  if (!parsed || parsed.format !== BROOMPACK_FORMAT) {
+    throw new Error("File isn't in the broompack format.");
+  }
+  if (typeof parsed.version === "number" && parsed.version > BROOMPACK_VERSION) {
+    throw new Error("This pack was made by a newer Broom — please update first.");
+  }
+  if (parsed.type && parsed.type !== "plants") {
+    throw new Error(`Pack type "${parsed.type}" isn't supported yet.`);
+  }
+  const entries = Array.isArray(parsed.entries) ? parsed.entries : [];
+  if (!entries.length) throw new Error("Pack contains no blooms.");
+  if (entries.length > MAX_PACK_FILES) {
+    throw new Error(`Pack has ${entries.length} blooms — limit is ${MAX_PACK_FILES}.`);
+  }
+  const cleaned = [];
+  for (const e of entries) {
+    if (!e || typeof e.svg !== "string") continue;
+    const safe = sanitizeSvg(e.svg);
+    if (!safe) continue;
+    cleaned.push({
+      plantId: String(cleaned.length),
+      name: typeof e.name === "string" ? e.name : "",
+      svg: safe
+    });
+  }
+  if (!cleaned.length) throw new Error("None of the blooms in that pack survived sanitization.");
+  return {
+    name: typeof parsed.name === "string" && parsed.name.trim() ? parsed.name.trim() : "Imported pack",
+    entries: cleaned
+  };
+}
+
+async function deleteCustomPack(packId) {
+  const idx = customPacksIndex.findIndex((p) => p.id === packId);
+  if (idx < 0) return;
+  customPacksIndex = customPacksIndex.filter((p) => p.id !== packId);
+  delete customPacksData[packId];
+  unregisterPackFromRegistry(packId);
+
+  // Without the pack, the saved plant rules referencing custom:${packId}:*
+  // would still try to render and fall back to pothos. The user explicitly
+  // chose this pack — losing the pack means losing the planting. Delete
+  // those rules across every host so reloading any tab won't resurrect a
+  // dangling reference. The underlying hide rule is left intact (the user
+  // can re-plant there later).
+  const prefix = `custom:${packId}:`;
+  const isFromDeletedPack = (r) =>
+    r?.payload?.kind === "plant" &&
+    typeof r?.payload?.plant?.kind === "string" &&
+    r.payload.plant.kind.startsWith(prefix);
+
+  // Current host: remove from DOM + in-memory list.
+  for (const r of [...appliedRules]) {
+    if (isFromDeletedPack(r)) removeRule(r.id);
+  }
+  appliedRules = appliedRules.filter((r) => !isFromDeletedPack(r));
+
+  try {
+    // All-hosts storage sweep.
+    const all = await chrome.storage.local.get(RULES_KEY);
+    const map = all[RULES_KEY] || {};
+    let changed = false;
+    for (const host of Object.keys(map)) {
+      const before = map[host] || [];
+      const after = before.filter((r) => !isFromDeletedPack(r));
+      if (after.length !== before.length) {
+        map[host] = after;
+        changed = true;
+      }
+    }
+    if (changed) await chrome.storage.local.set({ [RULES_KEY]: map });
+    await chrome.storage.local.set({ [CUSTOM_PACKS_INDEX_KEY]: customPacksIndex });
+    await chrome.storage.local.remove(CUSTOM_PACK_PREFIX + packId);
+  } catch { /* */ }
+
+  if (cachedPrefs.activePackId === packId) {
+    await setPref("activePackId", null);
+  }
+  // If plant mode is open, the cleared slots should immediately show their
+  // "empty plantable" affordance again.
+  if (activeMode === "plant") renderEmptySlotAffordances();
 }
 
 function getVersionAndBuild() {
@@ -253,6 +660,20 @@ function plantSizeForBox(box) {
 function chooseRandomPlant(hideRule) {
   const box = (hideRule.payload && hideRule.payload.originalBox) || { width: 120, height: 120 };
   const h = box.height;
+
+  // If the user has activated a custom bloom pack, draw from that pool
+  // exclusively. Pots still get rolled the same way as built-ins so the
+  // custom plant looks like it belongs in the same garden.
+  const customKinds = activePackKinds();
+  if (customKinds) {
+    return {
+      kind: randomFrom(customKinds),
+      size: plantSizeForBox(box),
+      animation: "gentle-sway",
+      pot: randomFrom(["terracotta", "ceramic"])
+    };
+  }
+
   const small = ["succulent", "fern", "snake-plant", "cactus", "aloe", "lavender", "pine", "tulips", "topiary", "air-plant", "daisies", "pilea"];
   const medium = ["pothos", "fern", "snake-plant", "monstera", "cactus", "aloe", "peace-lily", "calathea", "orchid", "zz-plant", "spider-plant", "cherry-blossom", "eucalyptus", "tulips", "sunflower", "topiary", "string-of-pearls", "rose-bush", "hydrangea", "bonsai", "daisies", "pilea", "maple"];
   const large = ["bird-of-paradise", "monstera", "pothos", "bamboo", "palm", "fiddle-leaf", "orchid", "zz-plant", "spider-plant", "pampas", "cherry-blossom", "eucalyptus", "sunflower", "rose-bush", "hydrangea", "bonsai", "maple"];
@@ -570,6 +991,7 @@ let activePlantDrag = null;
 function attachPlantDragHandlers(slot, plantEl, rule) {
   slot.addEventListener("pointerdown", (e) => {
     if (activeMode !== "plant") return;
+    if (broomSuspended) return;
     if (e.button !== undefined && e.button !== 0) return;
     if (plantEl.classList.contains("broom-plant-enter")) return;
     if (activePlantDrag) return;
@@ -926,6 +1348,7 @@ let broomSession = []; // rules swept in the current/most-recent broom session
 
 let activeMode = null; // "broom" | "plant" | "restore" | null
 let pickerTarget = null;
+let broomSuspended = false; // true while the user holds the configured suspend key
 
 // Restore-mode state
 const RESTORE_OVERLAY_ATTR = "data-broom-restore-for";
@@ -966,6 +1389,7 @@ function startMode(mode) {
 function stopMode() {
   if (!activeMode) return;
   cancelActivePlantDrag();
+  clearSuspended();
   const prev = activeMode;
   activeMode = null;
   pickerTarget = null;
@@ -1007,6 +1431,20 @@ function pickerStylesheet() {
     html.broom-picking, html.broom-picking * {
       cursor: none !important;
       user-select: none !important;
+    }
+    /* Hold-to-suspend: hide our chrome and re-enable native cursor/selection
+       so the user can open native menus, then resume brooming on key release. */
+    html[data-broom-suspended] #${HIGHLIGHT_ID},
+    html[data-broom-suspended] #${BROOM_CURSOR_ID},
+    html[data-broom-suspended] #broom-tag,
+    html[data-broom-suspended] .broom-empty-slot,
+    html[data-broom-suspended] .broom-restore-overlay {
+      display: none !important;
+    }
+    html[data-broom-suspended].broom-picking,
+    html[data-broom-suspended].broom-picking * {
+      cursor: auto !important;
+      user-select: auto !important;
     }
     #${BROOM_CURSOR_ID} {
       position: fixed !important;
@@ -1497,6 +1935,279 @@ function pickerStylesheet() {
     #${SETTINGS_ID} .bs-switch input:checked ~ .bs-switch-track::after {
       transform: translateX(16px) !important;
     }
+    #${SETTINGS_ID} .bs-keycap {
+      all: unset !important;
+      display: inline-flex !important;
+      align-items: center !important;
+      justify-content: center !important;
+      min-width: 32px !important;
+      height: 26px !important;
+      padding: 0 8px !important;
+      border-radius: 6px !important;
+      background: rgba(241,245,249,0.9) !important;
+      border: 1px solid rgba(148,163,184,0.4) !important;
+      box-shadow: 0 1px 0 rgba(15,23,42,0.08), inset 0 -1px 0 rgba(15,23,42,0.06) !important;
+      font: 700 12px/1 ui-monospace, "Cascadia Code", monospace !important;
+      color: #1f2937 !important;
+      cursor: pointer !important;
+      transition: background 0.12s, transform 0.08s !important;
+      flex: 0 0 auto !important;
+    }
+    #${SETTINGS_ID} .bs-keycap:hover { background: rgba(226,232,240,0.95) !important; }
+    #${SETTINGS_ID} .bs-keycap:active { transform: translateY(1px) !important; }
+    #${SETTINGS_ID} .bs-keycap.is-recording {
+      background: linear-gradient(135deg, #fde68a, #fbbf24) !important;
+      color: #78350f !important;
+      border-color: rgba(180, 83, 9, 0.45) !important;
+    }
+    /* ── Blooms carousel ──────────────────── */
+    #${SETTINGS_ID} .bs-blooms { padding: 4px 0 !important; }
+    #${SETTINGS_ID} .bs-blooms-title {
+      color: #1f2937 !important;
+      font-weight: 600 !important;
+      font-size: 13px !important;
+      padding: 0 4px 6px !important;
+    }
+    #${SETTINGS_ID} .bs-blooms-track {
+      display: flex !important;
+      flex-direction: row !important;
+      gap: 10px !important;
+      overflow-x: auto !important;
+      overflow-y: hidden !important;
+      padding: 10px 10px 14px !important;
+      scroll-snap-type: x mandatory !important;
+      scrollbar-width: thin !important;
+      -webkit-overflow-scrolling: touch !important;
+    }
+    #${SETTINGS_ID} .bs-blooms-track::-webkit-scrollbar { height: 6px !important; }
+    #${SETTINGS_ID} .bs-blooms-track::-webkit-scrollbar-thumb {
+      background: rgba(148,163,184,0.45) !important;
+      border-radius: 999px !important;
+    }
+    #${SETTINGS_ID} .bs-bloom-card {
+      all: unset !important;
+      flex: 0 0 auto !important;
+      box-sizing: border-box !important;
+      width: 56px !important;
+      height: 56px !important;
+      border-radius: 10px !important;
+      background: rgba(255,255,255,0.7) !important;
+      border: 1.5px solid rgba(148,163,184,0.35) !important;
+      cursor: pointer !important;
+      display: flex !important;
+      align-items: center !important;
+      justify-content: center !important;
+      scroll-snap-align: start !important;
+      transition: transform 0.12s, border-color 0.12s, background 0.12s !important;
+      position: relative !important;
+      overflow: visible !important;
+    }
+    #${SETTINGS_ID} .bs-bloom-card:hover { transform: translateY(-1px) !important; background: rgba(255,255,255,0.95) !important; }
+    #${SETTINGS_ID} .bs-bloom-card.is-active {
+      border-color: #6b4321 !important;
+      background: linear-gradient(180deg, #fff7ec, #ffe8c8) !important;
+      box-shadow: 0 0 0 2px rgba(176, 122, 69, 0.22) !important;
+    }
+    #${SETTINGS_ID} .bs-bloom-thumb {
+      width: 42px !important;
+      height: 42px !important;
+      display: flex !important;
+      align-items: center !important;
+      justify-content: center !important;
+      overflow: hidden !important;
+      pointer-events: none !important;
+    }
+    #${SETTINGS_ID} .bs-bloom-thumb svg { width: 100% !important; height: 100% !important; display: block !important; }
+    /* Hidden by default — surfaces as an overlay across the card on hover.
+       word-spacing: 100vw is the classic CSS trick to force one word per
+       line: every space is wider than the box so the layout always breaks
+       at whitespace, fitting more pack names without truncation. */
+    #${SETTINGS_ID} .bs-bloom-label {
+      position: absolute !important;
+      inset: 0 !important;
+      display: flex !important;
+      align-items: center !important;
+      justify-content: center !important;
+      padding: 4px !important;
+      background: rgba(15,23,42,0.78) !important;
+      color: #fff !important;
+      font: 600 10px/1.2 -apple-system, system-ui, sans-serif !important;
+      text-align: center !important;
+      overflow: hidden !important;
+      word-spacing: 100vw !important;
+      overflow-wrap: break-word !important;
+      border-radius: inherit !important;
+      pointer-events: none !important;
+      opacity: 0 !important;
+      transition: opacity 0.12s ease !important;
+    }
+    #${SETTINGS_ID} .bs-bloom-card:hover .bs-bloom-label,
+    #${SETTINGS_ID} .bs-bloom-card:focus-visible .bs-bloom-label {
+      opacity: 1 !important;
+    }
+    /* Round chip buttons in the corners. Inline SVG inside guarantees a crisp
+       glyph that doesn't get clipped by the small bounding box. */
+    #${SETTINGS_ID} .bs-bloom-chip {
+      all: unset !important;
+      position: absolute !important;
+      width: 18px !important;
+      height: 18px !important;
+      border-radius: 50% !important;
+      background: rgba(15,23,42,0.65) !important;
+      color: #fff !important;
+      display: flex !important;
+      align-items: center !important;
+      justify-content: center !important;
+      cursor: pointer !important;
+      opacity: 0 !important;
+      transition: opacity 0.12s, background 0.12s, transform 0.12s !important;
+      box-shadow: 0 1px 3px rgba(15,23,42,0.35) !important;
+    }
+    #${SETTINGS_ID} .bs-bloom-chip svg {
+      width: 11px !important;
+      height: 11px !important;
+      display: block !important;
+      pointer-events: none !important;
+    }
+    #${SETTINGS_ID} .bs-bloom-card:hover .bs-bloom-chip { opacity: 1 !important; }
+    #${SETTINGS_ID} .bs-bloom-chip:hover { transform: scale(1.08) !important; }
+    #${SETTINGS_ID} .bs-bloom-export {
+      top: -6px !important;
+      left: -6px !important;
+    }
+    #${SETTINGS_ID} .bs-bloom-export:hover { background: #1d4ed8 !important; }
+    #${SETTINGS_ID} .bs-bloom-delete {
+      top: -6px !important;
+      right: -6px !important;
+    }
+    #${SETTINGS_ID} .bs-bloom-delete:hover { background: #b91c1c !important; }
+    #${SETTINGS_ID} .bs-bloom-card.is-add { border-style: dashed !important; }
+    #${SETTINGS_ID} .bs-bloom-card.is-add .bs-bloom-thumb {
+      font: 300 26px/1 -apple-system, system-ui, sans-serif !important;
+      color: #94a3b8 !important;
+    }
+    #${SETTINGS_ID} .bs-bloom-card.is-add:hover { border-color: #6b4321 !important; }
+    #${SETTINGS_ID} .bs-bloom-card.is-add:hover .bs-bloom-thumb { color: #6b4321 !important; }
+    /* ── Bloom upload modal ──────────────────── */
+    #broom-bloom-modal {
+      position: fixed !important;
+      inset: 0 !important;
+      z-index: 2147483647 !important;
+      display: flex !important;
+      align-items: center !important;
+      justify-content: center !important;
+      background: rgba(15,23,42,0.45) !important;
+      backdrop-filter: blur(4px) !important;
+      -webkit-backdrop-filter: blur(4px) !important;
+      animation: bsweep-modal-in 0.18s ease-out both !important;
+    }
+    @keyframes bsweep-modal-in {
+      from { opacity: 0; }
+      to   { opacity: 1; }
+    }
+    #broom-bloom-modal .bm-card {
+      all: initial !important;
+      background: rgba(255,255,255,0.96) !important;
+      border-radius: 18px !important;
+      box-shadow: 0 24px 60px rgba(15,23,42,0.32) !important;
+      width: 380px !important;
+      max-width: calc(100vw - 32px) !important;
+      padding: 22px !important;
+      box-sizing: border-box !important;
+      font: 13px/1.45 -apple-system, system-ui, sans-serif !important;
+      color: #0f172a !important;
+      animation: bsweep-modal-card-in 0.22s cubic-bezier(0.22,1,0.36,1) both !important;
+    }
+    @keyframes bsweep-modal-card-in {
+      from { opacity: 0; transform: translateY(8px) scale(0.97); }
+      to   { opacity: 1; transform: translateY(0)   scale(1); }
+    }
+    #broom-bloom-modal .bm-card * { all: revert; box-sizing: border-box; }
+    #broom-bloom-modal h2 {
+      margin: 0 0 6px !important;
+      font-size: 16px !important;
+      font-weight: 700 !important;
+    }
+    #broom-bloom-modal p { margin: 0 0 14px !important; color: #475569 !important; }
+    #broom-bloom-modal .bm-rules {
+      list-style: disc !important;
+      padding-left: 18px !important;
+      margin: 0 0 14px !important;
+      color: #334155 !important;
+    }
+    #broom-bloom-modal .bm-rules li { margin: 2px 0 !important; }
+    #broom-bloom-modal .bm-rules code {
+      font: 500 12px/1 ui-monospace, "Cascadia Code", monospace !important;
+      background: rgba(241,245,249,0.9) !important;
+      border: 1px solid rgba(148,163,184,0.28) !important;
+      padding: 1px 5px !important;
+      border-radius: 5px !important;
+      color: #334155 !important;
+    }
+    #broom-bloom-modal label.bm-name {
+      display: block !important;
+      font-weight: 600 !important;
+      margin-bottom: 4px !important;
+      color: #1f2937 !important;
+    }
+    #broom-bloom-modal input.bm-name-input {
+      all: unset !important;
+      display: block !important;
+      width: 100% !important;
+      box-sizing: border-box !important;
+      padding: 8px 10px !important;
+      border: 1px solid rgba(148,163,184,0.4) !important;
+      border-radius: 8px !important;
+      font: 500 13px/1.3 -apple-system, system-ui, sans-serif !important;
+      color: #0f172a !important;
+      background: #fff !important;
+      margin-bottom: 12px !important;
+    }
+    #broom-bloom-modal input.bm-name-input:focus { border-color: #6b4321 !important; outline: 2px solid rgba(176,122,69,0.25) !important; }
+    #broom-bloom-modal .bm-drop {
+      border: 2px dashed rgba(148,163,184,0.55) !important;
+      border-radius: 12px !important;
+      padding: 22px 12px !important;
+      text-align: center !important;
+      color: #64748b !important;
+      cursor: pointer !important;
+      transition: background 0.14s, border-color 0.14s, color 0.14s !important;
+    }
+    #broom-bloom-modal .bm-drop:hover, #broom-bloom-modal .bm-drop.is-dragover {
+      background: rgba(176,122,69,0.07) !important;
+      border-color: #6b4321 !important;
+      color: #6b4321 !important;
+    }
+    #broom-bloom-modal .bm-drop strong { color: #1f2937 !important; display: block !important; margin-bottom: 4px !important; font-size: 14px !important; }
+    #broom-bloom-modal .bm-status {
+      margin-top: 10px !important;
+      font-size: 12px !important;
+      min-height: 16px !important;
+      color: #475569 !important;
+    }
+    #broom-bloom-modal .bm-status.is-error { color: #b91c1c !important; }
+    #broom-bloom-modal .bm-actions {
+      display: flex !important;
+      gap: 8px !important;
+      justify-content: flex-end !important;
+      margin-top: 16px !important;
+    }
+    #broom-bloom-modal .bm-btn {
+      all: unset !important;
+      padding: 8px 14px !important;
+      border-radius: 8px !important;
+      font: 600 13px/1 -apple-system, system-ui, sans-serif !important;
+      cursor: pointer !important;
+      transition: background 0.12s !important;
+    }
+    #broom-bloom-modal .bm-btn.bm-secondary { color: #475569 !important; }
+    #broom-bloom-modal .bm-btn.bm-secondary:hover { background: rgba(15,23,42,0.06) !important; }
+    #broom-bloom-modal .bm-btn.bm-primary {
+      background: linear-gradient(135deg, #b07a45, #6b4321) !important;
+      color: #fff !important;
+    }
+    #broom-bloom-modal .bm-btn.bm-primary:hover { filter: brightness(1.08) !important; }
+    #broom-bloom-modal .bm-btn.bm-primary[disabled] { opacity: 0.45 !important; cursor: not-allowed !important; }
     #${SETTINGS_ID} .bs-divider { height: 1px !important; background: rgba(148,163,184,0.22) !important; margin: 8px 0 !important; }
     #${SETTINGS_ID} .bs-btn {
       all: unset !important;
@@ -1924,18 +2635,22 @@ function pickerStylesheet() {
         max-height 200ms ease,
         margin-top 200ms ease !important;
     }
-    /* Reveal the note on plant hover — only when no mode is active. */
-    html:not([data-broom-mode]) .broom-plant-slot:hover .broom-plant-note {
+    /* Reveal the note on plant hover — only when no mode is active OR
+       brooming is suspended (hold-to-suspend key held down). */
+    html:not([data-broom-mode]) .broom-plant-slot:hover .broom-plant-note,
+    html[data-broom-suspended] .broom-plant-slot:hover .broom-plant-note {
       opacity: 1 !important;
       transform: translateX(-50%) translateY(0) rotate(-2deg) !important;
       pointer-events: auto !important;
     }
     /* Expanded state: hover the note itself. */
-    html:not([data-broom-mode]) .broom-plant-slot .broom-plant-note:hover {
+    html:not([data-broom-mode]) .broom-plant-slot .broom-plant-note:hover,
+    html[data-broom-suspended] .broom-plant-slot .broom-plant-note:hover {
       transform: translateX(-50%) translateY(0) rotate(-1deg) scale(1.08) !important;
       padding: 7px 14px 10px !important;
     }
-    html:not([data-broom-mode]) .broom-plant-slot .broom-plant-note:hover .broom-plant-note-date {
+    html:not([data-broom-mode]) .broom-plant-slot .broom-plant-note:hover .broom-plant-note-date,
+    html[data-broom-suspended] .broom-plant-slot .broom-plant-note:hover .broom-plant-note-date {
       opacity: 1 !important;
       /* 12px * 1.4 line-height = 16.8px text box, plus a little slack
          so the descender of "y" in "days" / "yesterday" never clips. */
@@ -2463,6 +3178,7 @@ function resolveBroomTarget(rawTarget) {
 
 function onOver(e) {
   if (activeMode !== "broom") return;
+  if (broomSuspended) return;
   const resolved = resolveBroomTarget(e.target);
   if (!resolved) return;
   if (!resolved.plantRule && isOurUI(e.target)) return;
@@ -2487,6 +3203,7 @@ function onOver(e) {
 
 function onClick(e) {
   if (activeMode !== "broom") return;
+  if (broomSuspended) return;
   const resolved = resolveBroomTarget(e.target);
   if (!resolved) return;
   if (!resolved.plantRule && isOurUI(e.target)) return;
@@ -2516,9 +3233,406 @@ function onClick(e) {
   });
 }
 
+// Hold-to-suspend: while the configured key is held inside an active broom
+// mode, brooming is paused so the user can interact with native page UI
+// (open a dropdown, expand a menu) and then sweep / plant / restore *inside*
+// what they just opened on release.
+function isEditableTarget(target) {
+  if (!target) return false;
+  const tag = target.tagName;
+  if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return true;
+  if (typeof target.isContentEditable === "boolean" && target.isContentEditable) return true;
+  return false;
+}
+
+function applySuspended() {
+  if (broomSuspended) return;
+  broomSuspended = true;
+  document.documentElement.setAttribute("data-broom-suspended", "");
+  // Drop any in-progress highlight/tag so the page reads as native immediately.
+  document.getElementById(HIGHLIGHT_ID)?.style.setProperty("opacity", "0");
+  hideSelectorTag();
+  pickerTarget = null;
+}
+
+function clearSuspended() {
+  if (!broomSuspended) return;
+  broomSuspended = false;
+  document.documentElement.removeAttribute("data-broom-suspended");
+  document.getElementById(HIGHLIGHT_ID)?.style.removeProperty("opacity");
+}
+
+// State for the settings "press a key" recorder — when non-null, the next
+// letter key captured by globalKeydown becomes the new suspendKey instead of
+// triggering suspend.
+let suspendKeyRecorder = null;
+
+// Render "KeyB" → "B" for the settings keycap. Falls back to the raw code
+// for anything non-letter so the user can see what's currently stored.
+function suspendKeyLabel(code) {
+  const c = code || "KeyB";
+  const m = /^Key([A-Z])$/.exec(c);
+  return m ? m[1] : c;
+}
+
+// Build a single card DOM node for the Blooms carousel. Static markup —
+// click handlers are wired by the caller via event delegation.
+function makeBloomCard({ packId, label, svg, isActive, isAdd }) {
+  const card = document.createElement("button");
+  card.type = "button";
+  card.className = "bs-bloom-card" + (isActive ? " is-active" : "") + (isAdd ? " is-add" : "");
+  if (packId) card.dataset.packId = packId;
+  if (isAdd) card.dataset.act = "add-pack";
+  const thumb = document.createElement("span");
+  thumb.className = "bs-bloom-thumb";
+  if (isAdd) thumb.textContent = "+";
+  else thumb.innerHTML = svg || "";
+  card.appendChild(thumb);
+  const lbl = document.createElement("span");
+  lbl.className = "bs-bloom-label";
+  lbl.textContent = label;
+  card.appendChild(lbl);
+  if (packId && packId !== "__default__") {
+    const exp = document.createElement("span");
+    exp.className = "bs-bloom-chip bs-bloom-export";
+    exp.dataset.act = "export-pack";
+    exp.dataset.packId = packId;
+    exp.title = "Download as .broompack";
+    exp.setAttribute("role", "button");
+    exp.setAttribute("aria-label", `Download ${label} as .broompack`);
+    exp.innerHTML = BLOOM_CHIP_EXPORT_SVG;
+    card.appendChild(exp);
+
+    const del = document.createElement("span");
+    del.className = "bs-bloom-chip bs-bloom-delete";
+    del.dataset.act = "delete-pack";
+    del.dataset.packId = packId;
+    del.title = "Remove pack";
+    del.setAttribute("role", "button");
+    del.setAttribute("aria-label", `Remove ${label}`);
+    del.innerHTML = BLOOM_CHIP_CLOSE_SVG;
+    card.appendChild(del);
+  }
+  return card;
+}
+
+const BLOOM_CHIP_CLOSE_SVG = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="6" y1="6" x2="18" y2="18"/><line x1="18" y1="6" x2="6" y2="18"/></svg>`;
+const BLOOM_CHIP_EXPORT_SVG = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4v12"/><polyline points="6 10 12 16 18 10"/><path d="M5 20h14"/></svg>`;
+
+// Repopulate the carousel inside the open settings popover. Safe to call
+// repeatedly — wipes children first.
+function renderBloomsCarousel() {
+  const track = document.querySelector(`#${SETTINGS_ID} [data-bs-blooms]`);
+  if (!track) return;
+  track.innerHTML = "";
+
+  // Default (built-in) card — always present, leads the carousel.
+  const activeId = cachedPrefs.activePackId || null;
+  const defaultThumb = PLANT_SVGS.pothos || "";
+  track.appendChild(makeBloomCard({
+    packId: "__default__",
+    label: "Default",
+    svg: defaultThumb,
+    isActive: !activeId
+  }));
+
+  for (const pack of customPacksIndex) {
+    track.appendChild(makeBloomCard({
+      packId: pack.id,
+      label: pack.name,
+      svg: pack.thumb,
+      isActive: activeId === pack.id
+    }));
+  }
+
+  // Trailing add button.
+  track.appendChild(makeBloomCard({ packId: null, label: "Add", isAdd: true }));
+}
+
+const BLOOM_MODAL_ID = "broom-bloom-modal";
+
+// Open the "Add a bloom pack" modal. Lets the user drop or pick a folder of
+// SVGs, names the pack, sanitizes every file, and saves it. The settings
+// popover is left open underneath so when the modal closes we just refresh
+// the carousel — no special re-mount needed.
+function openBloomUploadModal() {
+  closeBloomUploadModal();
+  const overlay = document.createElement("div");
+  overlay.id = BLOOM_MODAL_ID;
+  overlay.innerHTML = `
+    <div class="bm-card" role="dialog" aria-label="Add a bloom pack">
+      <h2>Add a bloom pack</h2>
+      <p>Drop a folder of SVGs to use as your planting pool.</p>
+      <ul class="bm-rules">
+        <li>SVG files only — other formats are ignored.</li>
+        <li>Up to ${MAX_PACK_FILES} files per pack.</li>
+        <li>Total size under ${Math.round(MAX_PACK_BYTES / (1024 * 1024))} MB.</li>
+        <li>Each SVG's filename becomes that bloom's label on hover.</li>
+        <li>Already have a <code>.broompack</code> file? Drop it here to import.</li>
+      </ul>
+      <label class="bm-name" for="bm-pack-name">Pack name</label>
+      <input id="bm-pack-name" class="bm-name-input" type="text" maxlength="64" placeholder="e.g. Pixel garden" />
+      <div class="bm-drop" tabindex="0" role="button" aria-label="Drop a folder of SVGs or click to choose one">
+        <strong>Drop a folder here</strong>
+        <span>or click to choose one</span>
+      </div>
+      <input type="file" class="bm-file-input" webkitdirectory directory multiple accept=".svg,image/svg+xml" hidden />
+      <div class="bm-status" aria-live="polite"></div>
+      <div class="bm-actions">
+        <button class="bm-btn bm-secondary" type="button" data-act="cancel">Cancel</button>
+        <button class="bm-btn bm-primary" type="button" data-act="save" disabled>Save pack</button>
+      </div>
+    </div>
+  `;
+  document.documentElement.appendChild(overlay);
+
+  const nameInput = overlay.querySelector(".bm-name-input");
+  const drop = overlay.querySelector(".bm-drop");
+  const fileInput = overlay.querySelector(".bm-file-input");
+  const status = overlay.querySelector(".bm-status");
+  const saveBtn = overlay.querySelector('[data-act="save"]');
+  const cancelBtn = overlay.querySelector('[data-act="cancel"]');
+
+  // Sanitized entries staged for save. Populated by handleFiles().
+  let staged = []; // { plantId, name, svg }
+
+  function setStatus(msg, isError) {
+    status.textContent = msg || "";
+    status.classList.toggle("is-error", !!isError);
+  }
+
+  function setSaveEnabled(on) {
+    if (on) saveBtn.removeAttribute("disabled");
+    else saveBtn.setAttribute("disabled", "");
+  }
+
+  async function handleFiles(fileList) {
+    const files = Array.from(fileList || []);
+    const svgFiles = files.filter((f) => /\.svg$/i.test(f.name));
+    if (!svgFiles.length) {
+      staged = [];
+      setSaveEnabled(false);
+      setStatus("No SVG files found in that selection.", true);
+      return;
+    }
+    if (svgFiles.length > MAX_PACK_FILES) {
+      staged = [];
+      setSaveEnabled(false);
+      setStatus(`Too many files: ${svgFiles.length} found, limit is ${MAX_PACK_FILES}.`, true);
+      return;
+    }
+    const totalBytes = svgFiles.reduce((n, f) => n + f.size, 0);
+    if (totalBytes > MAX_PACK_BYTES) {
+      staged = [];
+      setSaveEnabled(false);
+      setStatus(`Folder is too large: ${(totalBytes / (1024 * 1024)).toFixed(2)} MB, limit is ${MAX_PACK_BYTES / (1024 * 1024)} MB.`, true);
+      return;
+    }
+    // Default the pack name from the top-level folder if the field is empty
+    // and we have webkitRelativePath data.
+    const rel = svgFiles[0].webkitRelativePath;
+    if (!nameInput.value && rel) {
+      const top = rel.split("/")[0];
+      if (top) nameInput.value = top;
+    }
+
+    setStatus("Processing…");
+    const out = [];
+    let rejected = 0;
+    for (let i = 0; i < svgFiles.length; i++) {
+      const f = svgFiles[i];
+      let text;
+      try { text = await f.text(); } catch { rejected++; continue; }
+      const cleaned = sanitizeSvg(text);
+      if (!cleaned) { rejected++; continue; }
+      out.push({ plantId: String(i), name: prettifyPlantName(f.name), svg: cleaned });
+    }
+    if (!out.length) {
+      staged = [];
+      setSaveEnabled(false);
+      setStatus("None of the SVGs in that folder were valid.", true);
+      return;
+    }
+    staged = out;
+    setSaveEnabled(true);
+    const msg = rejected
+      ? `${out.length} SVGs ready · ${rejected} skipped (invalid or unsafe).`
+      : `${out.length} SVGs ready.`;
+    setStatus(msg, false);
+  }
+
+  drop.addEventListener("click", () => fileInput.click());
+  drop.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" || e.key === " ") { e.preventDefault(); fileInput.click(); }
+  });
+  fileInput.addEventListener("change", () => handleFiles(fileInput.files));
+  drop.addEventListener("dragover", (e) => {
+    e.preventDefault();
+    drop.classList.add("is-dragover");
+  });
+  drop.addEventListener("dragleave", () => drop.classList.remove("is-dragover"));
+  drop.addEventListener("drop", async (e) => {
+    e.preventDefault();
+    drop.classList.remove("is-dragover");
+    const dt = e.dataTransfer;
+    if (!dt) return;
+
+    // Single .broompack file → import path (skip the folder walker entirely).
+    const files = Array.from(dt.files || []);
+    if (files.length === 1 && /\.broompack$/i.test(files[0].name)) {
+      await handleBroompackDrop(files[0]);
+      return;
+    }
+
+    // Otherwise walk whatever was dropped as a directory tree of SVGs.
+    const items = dt.items;
+    if (items && items.length && items[0].webkitGetAsEntry) {
+      const collected = [];
+      const walks = [];
+      for (const item of Array.from(items)) {
+        const entry = item.webkitGetAsEntry && item.webkitGetAsEntry();
+        if (entry) walks.push(walkEntry(entry, collected));
+      }
+      await Promise.all(walks);
+      await handleFiles(collected);
+    } else if (files.length) {
+      await handleFiles(files);
+    }
+  });
+
+  async function handleBroompackDrop(file) {
+    setStatus("Importing pack…");
+    try {
+      const imported = await importBroompackFile(file);
+      if (!nameInput.value) nameInput.value = imported.name;
+      staged = imported.entries;
+      setSaveEnabled(true);
+      setStatus(`${imported.entries.length} bloom${imported.entries.length === 1 ? "" : "s"} ready from the pack.`);
+    } catch (err) {
+      staged = [];
+      setSaveEnabled(false);
+      setStatus((err && err.message) || String(err), true);
+    }
+  }
+
+  cancelBtn.addEventListener("click", () => closeBloomUploadModal());
+  saveBtn.addEventListener("click", async () => {
+    if (!staged.length) return;
+    saveBtn.setAttribute("disabled", "");
+    const name = nameInput.value.trim() || "Custom pack";
+    try {
+      await saveCustomPack({ name, entries: staged });
+      closeBloomUploadModal();
+      renderBloomsCarousel();
+    } catch (err) {
+      setStatus(`Save failed: ${(err && err.message) || err}`, true);
+      saveBtn.removeAttribute("disabled");
+    }
+  });
+
+  // Close on backdrop click + Esc
+  overlay.addEventListener("click", (e) => {
+    if (e.target === overlay) closeBloomUploadModal();
+  });
+  document.addEventListener("keydown", onBloomModalKeydown, true);
+
+  // Focus the name input so the user can type immediately if they prefer.
+  setTimeout(() => nameInput.focus(), 50);
+}
+
+function onBloomModalKeydown(e) {
+  if (e.key === "Escape" && document.getElementById(BLOOM_MODAL_ID)) {
+    e.preventDefault();
+    e.stopPropagation();
+    closeBloomUploadModal();
+  }
+}
+
+function closeBloomUploadModal() {
+  document.removeEventListener("keydown", onBloomModalKeydown, true);
+  document.getElementById(BLOOM_MODAL_ID)?.remove();
+}
+
+// Recursively read every .svg File inside a DataTransfer FileSystemEntry.
+// Used for folder drag-and-drop where the browser hands us a directory tree.
+function walkEntry(entry, out) {
+  return new Promise((resolve) => {
+    if (entry.isFile) {
+      entry.file((file) => {
+        if (/\.svg$/i.test(file.name)) out.push(file);
+        resolve();
+      }, () => resolve());
+      return;
+    }
+    if (entry.isDirectory) {
+      const reader = entry.createReader();
+      const readAll = (acc) => {
+        reader.readEntries((entries) => {
+          if (!entries.length) {
+            Promise.all(acc.map((c) => walkEntry(c, out))).then(() => resolve());
+            return;
+          }
+          readAll(acc.concat(entries));
+        }, () => resolve());
+      };
+      readAll([]);
+      return;
+    }
+    resolve();
+  });
+}
+
+function globalKeyup(e) {
+  if (!broomSuspended) return;
+  const suspendCode = cachedPrefs.suspendKey || "KeyB";
+  // Match on either code (preferred) or fall back to clearing on any keyup
+  // for safety when keyboards remap mid-press.
+  if (e.code === suspendCode) {
+    clearSuspended();
+  }
+}
+
 // Global keydown — always active. Esc exits brooming/closes panel.
 // Enter while a target is highlighted instantly hides it with a sweep animation.
 function globalKeydown(e) {
+  // Suspend-key recorder takes priority: capture the next letter keypress.
+  // stopImmediatePropagation prevents the settings popover's own Esc handler
+  // from closing the popover when the user is just canceling the recorder.
+  if (suspendKeyRecorder) {
+    if (e.key === "Escape") {
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      suspendKeyRecorder.cancel();
+      return;
+    }
+    if (/^Key[A-Z]$/.test(e.code)) {
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      suspendKeyRecorder.commit(e.code);
+    } else {
+      // Swallow other keys during recording so the host page doesn't react.
+      e.preventDefault();
+      e.stopImmediatePropagation();
+    }
+    return;
+  }
+
+  // Hold-to-suspend trigger. Only inside an active broom mode; ignore
+  // auto-repeat, modifier-laden chords, and keys typed into form fields.
+  const suspendCode = cachedPrefs.suspendKey || "KeyB";
+  if (
+    activeMode &&
+    e.code === suspendCode &&
+    !e.repeat &&
+    !e.ctrlKey && !e.metaKey && !e.altKey &&
+    !isEditableTarget(e.target)
+  ) {
+    e.preventDefault();
+    e.stopPropagation();
+    applySuspended();
+    return;
+  }
+
   if (e.key === "Escape") {
     let handled = false;
     if (activeMode) { stopMode(); handled = true; }
@@ -2609,6 +3723,14 @@ function installLauncher() {
     if (!wrap.contains(e.relatedTarget)) collapse();
   });
 
+  // Hovering the floating broom icon dismisses the settings popover so the
+  // user can click whatever's behind it without having to reach for an Esc.
+  // We attach to `main` (not the wrap) so navigating into the fan chips
+  // doesn't trigger a dismiss the user didn't intend.
+  main.addEventListener("mouseenter", () => {
+    if (document.getElementById(SETTINGS_ID)) closeSettingsPopover();
+  });
+
   main.addEventListener("click", (e) => {
     e.preventDefault();
     e.stopPropagation();
@@ -2692,6 +3814,18 @@ function openSettingsPopover() {
         <span class="bs-switch-track"></span>
       </span>
     </label>
+    <div class="bs-row">
+      <span class="bs-row-label">
+        Hold to pause brooming
+        <span class="bs-row-hint" data-bs-suspend-hint>Lets you open menus, then keep brooming.</span>
+      </span>
+      <button class="bs-keycap" data-act="record-suspend-key" type="button" aria-label="Change pause-brooming key">${suspendKeyLabel(cachedPrefs.suspendKey)}</button>
+    </div>
+    <div class="bs-divider"></div>
+    <div class="bs-blooms">
+      <div class="bs-blooms-title">Blooms</div>
+      <div class="bs-blooms-track" data-bs-blooms></div>
+    </div>
     <div class="bs-divider"></div>
     <button class="bs-btn" data-act="reset" type="button">
       <span class="bs-btn-glyph">🗑️</span><span>Restore original</span>
@@ -2721,6 +3855,74 @@ function openSettingsPopover() {
     } else {
       for (const r of appliedRules) removeRule(r.id);
     }
+  });
+
+  const keycap = pop.querySelector('[data-act="record-suspend-key"]');
+  const suspendHint = pop.querySelector("[data-bs-suspend-hint]");
+  const defaultHintText = suspendHint ? suspendHint.textContent : "";
+  const RECORDING_HINT_TEXT = "Select a letter key for this action.";
+  keycap.addEventListener("click", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (suspendKeyRecorder) { suspendKeyRecorder.cancel(); return; }
+    keycap.classList.add("is-recording");
+    keycap.textContent = "…";
+    if (suspendHint) suspendHint.textContent = RECORDING_HINT_TEXT;
+    suspendKeyRecorder = {
+      commit: async (code) => {
+        suspendKeyRecorder = null;
+        await setPref("suspendKey", code);
+        if (keycap.isConnected) {
+          keycap.classList.remove("is-recording");
+          keycap.textContent = suspendKeyLabel(code);
+        }
+        if (suspendHint && suspendHint.isConnected) suspendHint.textContent = defaultHintText;
+      },
+      cancel: () => {
+        suspendKeyRecorder = null;
+        if (keycap.isConnected) {
+          keycap.classList.remove("is-recording");
+          keycap.textContent = suspendKeyLabel(cachedPrefs.suspendKey);
+        }
+        if (suspendHint && suspendHint.isConnected) suspendHint.textContent = defaultHintText;
+      }
+    };
+  });
+
+  // Blooms carousel — render initial state and wire click delegation so the
+  // Default card, each custom pack, the trailing + button, and the per-card
+  // delete affordance all funnel through one handler.
+  renderBloomsCarousel();
+  const bloomsTrack = pop.querySelector("[data-bs-blooms]");
+  bloomsTrack.addEventListener("click", async (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const exportBtn = e.target.closest('[data-act="export-pack"]');
+    if (exportBtn) {
+      exportPackAsBroompack(exportBtn.dataset.packId);
+      return;
+    }
+    const deleteBtn = e.target.closest('[data-act="delete-pack"]');
+    if (deleteBtn) {
+      const id = deleteBtn.dataset.packId;
+      const pack = customPacksIndex.find((p) => p.id === id);
+      if (!pack) return;
+      if (!confirm(`Remove the "${pack.name}" pack? Any blooms you've already planted from this pack will be removed too.`)) return;
+      await deleteCustomPack(id);
+      renderBloomsCarousel();
+      return;
+    }
+    const card = e.target.closest(".bs-bloom-card");
+    if (!card) return;
+    if (card.dataset.act === "add-pack") {
+      openBloomUploadModal();
+      return;
+    }
+    const packId = card.dataset.packId;
+    const next = packId === "__default__" ? null : packId;
+    if (cachedPrefs.activePackId === next) return;
+    await setPref("activePackId", next);
+    renderBloomsCarousel();
   });
 
   pop.querySelector('[data-act="reset"]').addEventListener("click", async (e) => {
@@ -2775,16 +3977,25 @@ function onSettingsOutsideClick(e) {
   if (!pop) { document.removeEventListener("click", onSettingsOutsideClick, true); return; }
   if (pop.contains(e.target)) return;
   if (e.target.closest && e.target.closest(`#${LAUNCHER_WRAP_ID}`)) return;
+  // Don't treat clicks inside the bloom-upload modal as "outside" — the modal
+  // is a sibling of the popover but conceptually part of the same UI.
+  if (e.target.closest && e.target.closest(`#${BLOOM_MODAL_ID}`)) return;
   closeSettingsPopover();
 }
 
 function onSettingsKeydown(e) {
+  // While the bloom modal is open, its own Esc handler takes over.
+  if (document.getElementById(BLOOM_MODAL_ID)) return;
   if (e.key === "Escape") closeSettingsPopover();
 }
 
 function closeSettingsPopover() {
   document.removeEventListener("click", onSettingsOutsideClick, true);
   document.removeEventListener("keydown", onSettingsKeydown, true);
+  // Drop any in-flight suspend-key recorder so the next keystroke isn't
+  // swallowed into a popover that no longer exists.
+  if (suspendKeyRecorder) suspendKeyRecorder.cancel();
+  closeBloomUploadModal();
   const pop = document.getElementById(SETTINGS_ID);
   if (!pop) return;
   pop.classList.add("bs-leaving");
@@ -3496,6 +4707,9 @@ let lastUrl = location.href;
 
 async function init() {
   await loadPrefs();
+  // Load before applying rules so existing plants referencing custom:*
+  // kinds find their SVG in PLANT_SVGS and don't fall back to pothos.
+  await loadAllCustomPacks();
   appliedRules = await getRulesForHost(location.hostname);
   for (const r of appliedRules) applyRule(r);
 
@@ -3509,6 +4723,13 @@ async function init() {
   if (document.body) mountUI();
   else document.addEventListener("DOMContentLoaded", mountUI, { once: true });
   document.addEventListener("keydown", globalKeydown, true);
+  document.addEventListener("keyup", globalKeyup, true);
+  // Focus/visibility safety: if the window loses focus while the suspend key
+  // is held, no keyup will ever fire — without these we'd be stuck suspended.
+  window.addEventListener("blur", clearSuspended);
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) clearSuspended();
+  });
 
   const mo = new MutationObserver(debounce(onMutate, 120));
   const observe = () => mo.observe(document.body, { childList: true, subtree: true });
@@ -3558,8 +4779,9 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
 });
 
 chrome.storage.onChanged.addListener((changes, area) => {
-  if (area === "local" && changes[RULES_KEY]) void refreshRules();
-  if (area === "local" && changes[PREFS_KEY]) {
+  if (area !== "local") return;
+  if (changes[RULES_KEY]) void refreshRules();
+  if (changes[PREFS_KEY]) {
     const prevShow = cachedPrefs.showChanges !== false;
     cachedPrefs = { ...DEFAULT_PREFS, ...(changes[PREFS_KEY].newValue || {}) };
     const nextShow = cachedPrefs.showChanges !== false;
@@ -3568,6 +4790,10 @@ chrome.storage.onChanged.addListener((changes, area) => {
       if (nextShow) for (const r of appliedRules) applyRule(r);
       else for (const r of appliedRules) removeRule(r.id);
     }
+  }
+  // Pack changes from another tab: re-sync the local mirror + registries.
+  if (changes[CUSTOM_PACKS_INDEX_KEY] || Object.keys(changes).some((k) => k.startsWith(CUSTOM_PACK_PREFIX))) {
+    void loadAllCustomPacks();
   }
 });
 
