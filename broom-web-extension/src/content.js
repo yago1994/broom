@@ -370,11 +370,133 @@ function formatPlantedAgo(createdAt) {
   return `${yr} years ago`;
 }
 
+// ── Plant aging ──────────────────────────────────────────────────────────────
+// Plants age only on days the user visits a site without watering. Offline
+// days don't count: aging is tied to page-load events, not wall-clock time.
+// Watering rolls the counter back by one day, so a "very thirsty" plant
+// (daysUnwatered≈7) takes ~5 waters to look fresh again. Once daysUnwatered
+// reaches DEAD_AT, the plant is permanently dead.
+
+const PLANT_THIRSTY_AT = 3;
+const PLANT_VERY_THIRSTY_AT = 7;
+const PLANT_DEAD_AT = 14;
+
+function todayLocalDate() {
+  const d = new Date();
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+function computePlantState(plant) {
+  const n = (plant && typeof plant.daysUnwatered === "number") ? plant.daysUnwatered : 0;
+  if (n >= PLANT_DEAD_AT) return "dead";
+  if (n >= PLANT_VERY_THIRSTY_AT) return "very-thirsty";
+  if (n >= PLANT_THIRSTY_AT) return "thirsty";
+  return "fresh";
+}
+
+// Advance the day-counter at most once per local calendar day. Mutates the
+// rule in place and persists if anything changed. Returns the (possibly
+// updated) plant object for convenience.
+async function tickPlantAge(rule) {
+  const p = rule.payload && rule.payload.plant;
+  if (!p) return p;
+  if (typeof p.daysUnwatered !== "number") p.daysUnwatered = 0;
+  const today = todayLocalDate();
+  let changed = false;
+  if (p.daysUnwatered < PLANT_DEAD_AT) {
+    if (p.lastVisitDate !== today && p.lastWateredDate !== today) {
+      p.daysUnwatered += 1;
+      changed = true;
+    }
+    if (p.lastVisitDate !== today) {
+      p.lastVisitDate = today;
+      changed = true;
+    }
+    if (p.daysUnwatered >= PLANT_DEAD_AT && !p.diedDate) {
+      p.diedDate = today;
+      changed = true;
+    }
+  }
+  if (changed) {
+    try { await upsertRuleLocal(rule); } catch (_) {}
+  }
+  return p;
+}
+
+// Debug-only: visually force every planted slot into a given aging state
+// without touching the underlying rule data. Used by the settings popover so
+// the user can preview each state on plants they've already placed. The
+// "real" pseudo-state means "revert to whatever the data says".
+function applyDebugAgeStateToAll(state) {
+  document.querySelectorAll(`[${INJECTED_ATTR}]`).forEach((slot) => {
+    const ruleId = slot.getAttribute(INJECTED_ATTR);
+    const rule = appliedRules.find((r) => r.id === ruleId);
+    if (!rule || !rule.payload || rule.payload.decoration !== "plant") return;
+    const wrapper = slot.querySelector(".broom-plant");
+    if (!wrapper) return;
+    const target = state === "real" ? computePlantState(rule.payload.plant) : state;
+    forcePlantStateOnWrapper(wrapper, target, rule.payload.plant);
+  });
+}
+
+// Swap a single plant wrapper into a forced state. Restores the kind-specific
+// SVG when leaving "dead", since refreshPlantStateClass only ever applies the
+// stick swap in the dead direction.
+function forcePlantStateOnWrapper(wrapper, state, plant) {
+  wrapper.classList.remove(
+    "broom-plant-state-fresh",
+    "broom-plant-state-thirsty",
+    "broom-plant-state-very-thirsty",
+    "broom-plant-state-dead"
+  );
+  wrapper.classList.add(`broom-plant-state-${state}`);
+  const foliage = wrapper.querySelector(".broom-plant-foliage");
+  if (!foliage) return;
+  if (state === "dead") {
+    if (!foliage.classList.contains("broom-plant-foliage-dead")) {
+      foliage.classList.add("broom-plant-foliage-dead");
+      foliage.innerHTML = DEAD_STICK_SVG;
+    }
+  } else if (foliage.classList.contains("broom-plant-foliage-dead")) {
+    foliage.classList.remove("broom-plant-foliage-dead");
+    foliage.innerHTML = PLANT_SVGS[plant.kind] || PLANT_SVGS.pothos;
+  }
+}
+
+function refreshPlantStateClass(wrapper, plant) {
+  if (!wrapper) return;
+  const state = computePlantState(plant);
+  wrapper.classList.remove(
+    "broom-plant-state-fresh",
+    "broom-plant-state-thirsty",
+    "broom-plant-state-very-thirsty",
+    "broom-plant-state-dead"
+  );
+  wrapper.classList.add(`broom-plant-state-${state}`);
+  // If we just dropped into the dead state, swap the foliage to the shared
+  // stick SVG so the visual matches the data — but only if not already swapped
+  // (cheap idempotent check via a marker class on the foliage).
+  const foliage = wrapper.querySelector(".broom-plant-foliage");
+  if (!foliage) return;
+  if (state === "dead" && !foliage.classList.contains("broom-plant-foliage-dead")) {
+    foliage.classList.add("broom-plant-foliage-dead");
+    foliage.innerHTML = DEAD_STICK_SVG;
+  }
+}
+
 function applyPlant(rule, options) {
   const anchor = resolveSelector(rule.selector.primary, rule.selector.fallbacks);
   if (!anchor) return;
   const escId = rule.id.replace(/"/g, '\\"');
   if (document.querySelector(`[${INJECTED_ATTR}="${escId}"]`)) return;
+
+  // Advance the day counter for this visit. The synchronous mutation runs
+  // before renderPlant so the wrapper picks up the new state class; the
+  // chrome.storage write happens in the background.
+  tickPlantAge(rule);
 
   const slot = document.createElement("div");
   slot.setAttribute(INJECTED_ATTR, rule.id);
@@ -459,7 +581,7 @@ function applyPlant(rule, options) {
     if (plant.classList.contains("broom-plant-enter")) return;
     e.preventDefault();
     e.stopPropagation();
-    spawnRaindrop(slot, plant, e);
+    spawnRaindrop(slot, plant, e, rule);
   });
   plant.addEventListener("animationend", (e) => {
     if (e.animationName === "broom-plant-popin") {
@@ -474,7 +596,11 @@ function applyPlant(rule, options) {
 
 const RAINDROP_SVG = `<svg viewBox="0 0 12 18" aria-hidden="true"><path d="M6 1 Q11 9 11 13 Q11 17 6 17 Q1 17 1 13 Q1 9 6 1 Z" fill="#5aa8e8" stroke="#3a78b8" stroke-width="0.8"/><ellipse cx="4" cy="6" rx="1.2" ry="2" fill="#a8d4f0" opacity="0.7"/></svg>`;
 
-function spawnRaindrop(slot, plant, event) {
+function spawnRaindrop(slot, plant, event, rule) {
+  // Dead plants are inert: no raindrop, no sound, no state change.
+  if (rule && rule.payload && rule.payload.plant && computePlantState(rule.payload.plant) === "dead") {
+    return;
+  }
   const rect = slot.getBoundingClientRect();
   const clickX = event && typeof event.clientX === "number"
     ? Math.max(8, Math.min(rect.width - 8, event.clientX - rect.left))
@@ -513,6 +639,19 @@ function spawnRaindrop(slot, plant, event) {
       void foliage.offsetWidth;
       foliage.classList.add("broom-plant-watered");
     }
+    // Roll the age counter back by one day per drop. The decrement model
+    // means ~5 waters lift a "very thirsty" plant back to "fresh". Dead
+    // plants are gated out earlier in spawnRaindrop, so we never resurrect.
+    if (rule && rule.payload && rule.payload.plant) {
+      const p = rule.payload.plant;
+      if (typeof p.daysUnwatered !== "number") p.daysUnwatered = 0;
+      if (p.daysUnwatered < PLANT_DEAD_AT) {
+        p.daysUnwatered = Math.max(0, p.daysUnwatered - 1);
+        p.lastWateredDate = todayLocalDate();
+        refreshPlantStateClass(plant, p);
+        try { upsertRuleLocal(rule); } catch (_) {}
+      }
+    }
     [
       { px: -10, py: -4, dur: 420, delay: 0 },
       { px:  -4, py: -8, dur: 460, delay: 30 },
@@ -541,11 +680,15 @@ function spawnRaindrop(slot, plant, event) {
 function renderPlant(props) {
   const wrapper = document.createElement("div");
   const animClass = props.animation && props.animation !== "none" ? `broom-plant-anim-${props.animation}` : "";
-  wrapper.className = `broom-plant broom-plant-${props.kind} broom-plant-${props.size} broom-plant-pot-${props.pot} ${animClass}`.trim();
+  const state = computePlantState(props);
+  const stateClass = `broom-plant-state-${state}`;
+  wrapper.className = `broom-plant broom-plant-${props.kind} broom-plant-${props.size} broom-plant-pot-${props.pot} ${animClass} ${stateClass}`.trim();
   wrapper.setAttribute("aria-hidden", "true");
   const potSvg = POT_SVGS[props.pot] || "";
-  const plantSvg = PLANT_SVGS[props.kind] || PLANT_SVGS.pothos;
-  wrapper.innerHTML = `<div class="broom-plant-foliage">${plantSvg}</div>${potSvg ? `<div class="broom-plant-pot">${potSvg}</div>` : ""}`;
+  const isDead = state === "dead";
+  const plantSvg = isDead ? DEAD_STICK_SVG : (PLANT_SVGS[props.kind] || PLANT_SVGS.pothos);
+  const foliageClass = isDead ? "broom-plant-foliage broom-plant-foliage-dead" : "broom-plant-foliage";
+  wrapper.innerHTML = `<div class="${foliageClass}">${plantSvg}</div>${potSvg ? `<div class="broom-plant-pot">${potSvg}</div>` : ""}`;
   return wrapper;
 }
 
@@ -1517,6 +1660,37 @@ function pickerStylesheet() {
     #${SETTINGS_ID} .bs-btn-glyph { font-size: 15px !important; }
     #${SETTINGS_ID} .bs-btn[data-act="reset"] { color: #b91c1c !important; }
     #${SETTINGS_ID} .bs-btn[data-act="reset"]:hover { background: rgba(220,38,38,0.10) !important; }
+    #${SETTINGS_ID} .bs-debug {
+      padding: 4px 4px 2px !important;
+    }
+    #${SETTINGS_ID} .bs-debug-label {
+      font: 600 10px/1.2 -apple-system, system-ui, sans-serif !important;
+      text-transform: uppercase !important;
+      letter-spacing: 0.06em !important;
+      color: #94a3b8 !important;
+      padding: 0 4px 6px !important;
+    }
+    #${SETTINGS_ID} .bs-debug-row {
+      display: grid !important;
+      grid-template-columns: repeat(5, 1fr) !important;
+      gap: 4px !important;
+    }
+    #${SETTINGS_ID} .bs-debug-btn {
+      all: unset !important;
+      box-sizing: border-box !important;
+      padding: 6px 4px !important;
+      border-radius: 6px !important;
+      background: rgba(99,102,241,0.06) !important;
+      color: #475569 !important;
+      font: 600 10px/1.2 -apple-system, system-ui, sans-serif !important;
+      text-align: center !important;
+      cursor: pointer !important;
+      transition: background 0.12s, color 0.12s !important;
+    }
+    #${SETTINGS_ID} .bs-debug-btn:hover { background: rgba(99,102,241,0.16) !important; color: #1f2937 !important; }
+    #${SETTINGS_ID} .bs-debug-btn.is-active { background: #6366f1 !important; color: #fff !important; }
+    #${SETTINGS_ID} .bs-debug-btn-real { color: #15803d !important; }
+    #${SETTINGS_ID} .bs-debug-btn-real.is-active { background: #15803d !important; color: #fff !important; }
     @keyframes bsweep-launcher-enter {
       0%   { transform: translateY(-140px) rotate(-25deg) scale(0.6); opacity: 0; }
       55%  { transform: translateY(8px)    rotate(8deg)   scale(1.08); opacity: 1; }
@@ -1844,6 +2018,53 @@ function pickerStylesheet() {
     }
     .broom-plant-splash {
       box-shadow: 0 0 4px rgba(90,168,232,0.6) !important;
+    }
+    /* ── Aging states ──────────────────────────────────────────────────────
+       Plants degrade visually via CSS filters on .broom-plant-foliage so the
+       pot stays vibrant. State is determined by daysUnwatered (0-2 fresh,
+       3-6 thirsty, 7-13 very-thirsty, 14+ dead). Filters compose: hue-rotate
+       shifts green → yellow → brown, saturate desaturates, brightness dims. */
+    .broom-plant-state-fresh .broom-plant-foliage {
+      filter: none;
+    }
+    /* Thirsty: visibly yellowing + slight droop. Foliage shrinks vertically
+       and tilts a touch — pivots from bottom-center (set on .broom-plant-foliage
+       above) so the base stays planted in the pot. Idle sway is suppressed so
+       the static droop reads clearly instead of being overwritten by keyframes. */
+    .broom-plant-state-thirsty .broom-plant-foliage {
+      filter: saturate(0.55) hue-rotate(-22deg) brightness(0.92) sepia(0.15) !important;
+      transform: scaleY(0.9) rotate(-3deg) !important;
+      transition: filter 600ms ease-out, transform 600ms ease-out !important;
+    }
+    /* Very thirsty: heavy droop + browning. Significant vertical squash plus
+       a stronger lean and a skew, so the silhouette clearly reads "wilted". */
+    .broom-plant-state-very-thirsty .broom-plant-foliage {
+      filter: saturate(0.3) hue-rotate(-40deg) brightness(0.7) sepia(0.45) !important;
+      opacity: 0.88 !important;
+      transform: scaleY(0.7) rotate(-7deg) skewX(4deg) translateY(6%) !important;
+      transition: filter 600ms ease-out, opacity 600ms ease-out, transform 600ms ease-out !important;
+    }
+    /* Suppress the idle sway/breathing/leaf-wiggle keyframes when thirsty so
+       the wilt transform isn't overwritten by the cheerful animation. */
+    .broom-plant-state-thirsty.broom-plant-anim-gentle-sway .broom-plant-foliage,
+    .broom-plant-state-thirsty.broom-plant-anim-breathing .broom-plant-foliage,
+    .broom-plant-state-thirsty.broom-plant-anim-leaf-wiggle .broom-plant-foliage,
+    .broom-plant-state-very-thirsty.broom-plant-anim-gentle-sway .broom-plant-foliage,
+    .broom-plant-state-very-thirsty.broom-plant-anim-breathing .broom-plant-foliage,
+    .broom-plant-state-very-thirsty.broom-plant-anim-leaf-wiggle .broom-plant-foliage {
+      animation: none !important;
+    }
+    /* Dead: stick SVG already swapped in JS — neutralize idle animations so
+       the skeleton doesn't sway, and slightly fade for that "gone" feel. */
+    .broom-plant-state-dead .broom-plant-foliage {
+      filter: none !important;
+      animation: none !important;
+      opacity: 0.85 !important;
+    }
+    .broom-plant-state-dead.broom-plant-anim-gentle-sway .broom-plant-foliage,
+    .broom-plant-state-dead.broom-plant-anim-breathing .broom-plant-foliage,
+    .broom-plant-state-dead.broom-plant-anim-leaf-wiggle .broom-plant-foliage {
+      animation: none !important;
     }
     /* Raindrop: falls from above the plant onto the foliage on click */
     .broom-raindrop {
@@ -2693,6 +2914,17 @@ function openSettingsPopover() {
       </span>
     </label>
     <div class="bs-divider"></div>
+    <div class="bs-debug">
+      <div class="bs-debug-label">Debug: preview plant aging</div>
+      <div class="bs-debug-row">
+        <button class="bs-debug-btn" data-debug-state="fresh" type="button">Fresh</button>
+        <button class="bs-debug-btn" data-debug-state="thirsty" type="button">Thirsty</button>
+        <button class="bs-debug-btn" data-debug-state="very-thirsty" type="button">Very thirsty</button>
+        <button class="bs-debug-btn" data-debug-state="dead" type="button">Dead</button>
+        <button class="bs-debug-btn bs-debug-btn-real" data-debug-state="real" type="button">Real</button>
+      </div>
+    </div>
+    <div class="bs-divider"></div>
     <button class="bs-btn" data-act="reset" type="button">
       <span class="bs-btn-glyph">🗑️</span><span>Restore original</span>
     </button>
@@ -2721,6 +2953,17 @@ function openSettingsPopover() {
     } else {
       for (const r of appliedRules) removeRule(r.id);
     }
+  });
+
+  pop.querySelectorAll(".bs-debug-btn").forEach((btn) => {
+    btn.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const state = btn.getAttribute("data-debug-state");
+      if (!state) return;
+      applyDebugAgeStateToAll(state);
+      pop.querySelectorAll(".bs-debug-btn").forEach((b) => b.classList.toggle("is-active", b === btn));
+    });
   });
 
   pop.querySelector('[data-act="reset"]').addEventListener("click", async (e) => {

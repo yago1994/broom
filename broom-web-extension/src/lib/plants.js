@@ -134,3 +134,8 @@ const PLANT_NAMES = {
   pilea: "Pilea",
   maple: "Maple sapling"
 };
+
+// Shared "dead plant" foliage: a bare twig with two broken branches. Replaces
+// the per-kind PLANT_SVGS entry once a plant has crossed the death threshold,
+// so all 32 plants degrade into the same neutral skeleton.
+const DEAD_STICK_SVG = `<svg viewBox="0 0 100 100" aria-hidden="true"><g stroke="#5a3a1f" stroke-width="3" stroke-linecap="round" fill="none"><path d="M50 96 Q50 84 50 72 Q50 64 50 58"/><path d="M50 74 Q42 70 36 68"/><path d="M50 64 Q58 60 66 60"/></g><g stroke="#3a2510" stroke-width="1.4" stroke-linecap="round" fill="none" opacity="0.5"><path d="M48 92 Q48 84 48 76"/></g></svg>`;
