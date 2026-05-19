@@ -6,6 +6,7 @@ const pickBtn = document.getElementById("pick");
 const restoreBtn = document.getElementById("restore-toggle");
 
 render();
+void nudgeLookDownHint();
 
 pickBtn.addEventListener("click", async () => {
   const tab = await getActiveTab();
@@ -80,6 +81,18 @@ function renderRule(r, hostname, tabId) {
 
   li.append(toggle, meta, del);
   return li;
+}
+
+// Safari-only nudge: when the user opens the toolbar popover, ask the content
+// script to flash a toast pointing them at the floating broom at the bottom of
+// the page. The content script gates this on a "launcherDiscovered" pref so
+// users who already know about the launcher never see the hint.
+async function nudgeLookDownHint() {
+  try {
+    const tab = await getActiveTab();
+    if (!tab?.id) return;
+    chrome.tabs.sendMessage(tab.id, { type: "BROOM_HINT_LOOK_DOWN" }).catch(() => {});
+  } catch { /* never break the popup */ }
 }
 
 async function getActiveTab() {

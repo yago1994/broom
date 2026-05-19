@@ -10,3 +10,4 @@ xcuserdata/
 *.xcuserstate
 *.xcuserdatad/
 broom-web-extension/web-ext-artifacts/
+/orchids

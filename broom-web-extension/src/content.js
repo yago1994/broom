@@ -106,7 +106,7 @@ async function clearRulesForHost(hostname) {
 // ── Prefs (sound on/off, etc.) ───────────────────────────────────────────────
 
 const PREFS_KEY = "prefs";
-const DEFAULT_PREFS = { soundEnabled: true, showChanges: true, suspendKey: "KeyB", activePackId: null };
+const DEFAULT_PREFS = { soundEnabled: true, showChanges: true, suspendKey: "KeyB", activePackId: null, launcherPos: null };
 let cachedPrefs = { ...DEFAULT_PREFS };
 
 async function loadPrefs() {
@@ -1631,7 +1631,7 @@ function pickerStylesheet() {
       line-height: 1 !important;
       cursor: pointer !important;
       user-select: none !important;
-      transition: transform 0.2s cubic-bezier(.4,1.6,.5,1), box-shadow 0.18s, background 0.18s, border-color 0.18s !important;
+      transition: transform 0.18s cubic-bezier(.2,.7,.2,1), box-shadow 0.18s, background 0.18s, border-color 0.18s !important;
       font-family: -apple-system, system-ui, sans-serif !important;
       padding: 0 !important;
       animation: bsweep-launcher-enter 0.85s cubic-bezier(.34,1.56,.64,1) both !important;
@@ -1643,6 +1643,10 @@ function pickerStylesheet() {
         0 6px 14px rgba(15,23,42,0.18),
         inset 0 0 0 1px rgba(255,255,255,0.7) !important;
       border-color: rgba(107, 67, 33, 0.55) !important;
+      /* Bouncy easing applies only on the way IN to :hover. On the way out
+         the base rule's smooth easing takes over, so the icon doesn't dip
+         below scale 1.0 and wobble (the "jump up and down" on unhover/drop). */
+      transition: transform 0.2s cubic-bezier(.4,1.6,.5,1), box-shadow 0.18s, background 0.18s, border-color 0.18s !important;
     }
     #${LAUNCHER_ID}:active { transform: scale(0.92) rotate(-12deg) !important; }
     #${LAUNCHER_ID}.squash { animation: bsweep-launcher-squash 0.32s cubic-bezier(.34,1.56,.64,1) !important; }
@@ -1744,6 +1748,39 @@ function pickerStylesheet() {
     #${LAUNCHER_WRAP_ID}.broom-fan-open .broom-fan-chip:nth-child(2) { transition-delay: 120ms; }
     #${LAUNCHER_WRAP_ID}.broom-fan-open .broom-fan-chip:nth-child(3) { transition-delay: 60ms; }
     #${LAUNCHER_WRAP_ID}.broom-fan-open .broom-fan-chip:nth-child(4) { transition-delay: 0ms; }
+    /* Fan reorientation: when the launcher is dragged to a non-default corner,
+       flip the fan's horizontal/vertical anchor so chips never expand off-screen.
+       column-reverse keeps the chip closest to the broom icon at the visual top
+       when the fan opens downward; the nth-child delays invert to match so the
+       cascade still emanates from the icon. */
+    #${LAUNCHER_WRAP_ID}[data-broom-anchor-x="left"] .broom-fan {
+      right: auto !important;
+      left: 0 !important;
+      align-items: flex-start !important;
+    }
+    #${LAUNCHER_WRAP_ID}[data-broom-anchor-y="top"] .broom-fan {
+      bottom: auto !important;
+      top: 60px !important;
+      flex-direction: column-reverse !important;
+    }
+    #${LAUNCHER_WRAP_ID}[data-broom-anchor-y="top"].broom-fan-open .broom-fan-chip:nth-child(1) { transition-delay: 0ms; }
+    #${LAUNCHER_WRAP_ID}[data-broom-anchor-y="top"].broom-fan-open .broom-fan-chip:nth-child(2) { transition-delay: 60ms; }
+    #${LAUNCHER_WRAP_ID}[data-broom-anchor-y="top"].broom-fan-open .broom-fan-chip:nth-child(3) { transition-delay: 120ms; }
+    #${LAUNCHER_WRAP_ID}[data-broom-anchor-y="top"].broom-fan-open .broom-fan-chip:nth-child(4) { transition-delay: 180ms; }
+    /* Drag visuals — intentionally avoid changing transform here. The base
+       launcher rule transitions transform with an overshoot easing
+       (cubic-bezier(.4, 1.6, .5, 1)), so any scale change here would snap back
+       with a visible bounce on drop. Shadow + border + the grabbing cursor are
+       enough to communicate dragging. */
+    #${LAUNCHER_WRAP_ID}.broom-dragging #${LAUNCHER_ID} {
+      box-shadow:
+        0 22px 50px rgba(15,23,42,0.38),
+        0 8px 18px rgba(15,23,42,0.22),
+        inset 0 0 0 1px rgba(255,255,255,0.7) !important;
+      border-color: rgba(107, 67, 33, 0.55) !important;
+      animation: none !important;
+    }
+    html.broom-launcher-dragging, html.broom-launcher-dragging * { cursor: grabbing !important; }
     #${LAUNCHER_WRAP_ID} .broom-fan-chip[data-mode="plant"]:hover {
       background: linear-gradient(135deg, rgba(108,197,81,0.22), rgba(56,161,105,0.22)) !important;
       border-color: rgba(56,161,105,0.6) !important;
@@ -2917,6 +2954,14 @@ function pickerStylesheet() {
     #${UNDO_TOAST_ID} .but-close:active { transform: scale(0.9); }
     html.broom-picking #${UNDO_TOAST_ID} .but-close { cursor: pointer !important; }
 
+    /* When the broom is dragged to the bottom-left (where toasts normally live),
+       flip toasts to the bottom-right so the icon doesn't cover them. */
+    html[data-broom-toast-side="right"] #${PLANT_TOAST_ID},
+    html[data-broom-toast-side="right"] #${UNDO_TOAST_ID} {
+      left: auto !important;
+      right: 22px !important;
+    }
+
     /* ── Restore-mode overlay ────────────────── */
     .broom-restore-overlay {
       position: fixed !important;
@@ -3669,6 +3714,248 @@ function globalKeydown(e) {
 
 // ── Always-present launcher ───────────────────────────────────────────────────
 
+// Drag-to-reposition state. Position is stored in cachedPrefs.launcherPos as
+// corner-relative offsets, so the icon "sticks" to the nearest corner across
+// window resizes and reloads. Default-null = bottom-right via CSS.
+const LAUNCHER_MARGIN_PX = 8;
+const LAUNCHER_SIZE_PX = 54;
+let launcherDragJustEnded = false;
+let activeLauncherDrag = null;
+
+function applyToastSide(anchorX, anchorY) {
+  if (anchorY === "bottom" && anchorX === "left") {
+    document.documentElement.setAttribute("data-broom-toast-side", "right");
+  } else {
+    document.documentElement.removeAttribute("data-broom-toast-side");
+  }
+}
+
+function applyLauncherPlacement(wrap) {
+  const target = wrap || document.getElementById(LAUNCHER_WRAP_ID);
+  if (!target) return;
+  const pos = cachedPrefs.launcherPos;
+  if (!pos) {
+    target.style.removeProperty("top");
+    target.style.removeProperty("left");
+    target.style.removeProperty("right");
+    target.style.removeProperty("bottom");
+    target.removeAttribute("data-broom-anchor-x");
+    target.removeAttribute("data-broom-anchor-y");
+    applyToastSide("right", "bottom");
+    positionSettingsPopover(document.getElementById(SETTINGS_ID));
+    return;
+  }
+  const vw = window.innerWidth;
+  const vh = window.innerHeight;
+  const maxX = Math.max(LAUNCHER_MARGIN_PX, vw - LAUNCHER_SIZE_PX - LAUNCHER_MARGIN_PX);
+  const maxY = Math.max(LAUNCHER_MARGIN_PX, vh - LAUNCHER_SIZE_PX - LAUNCHER_MARGIN_PX);
+  const offsetX = Math.min(Math.max(pos.offsetX, LAUNCHER_MARGIN_PX), maxX);
+  const offsetY = Math.min(Math.max(pos.offsetY, LAUNCHER_MARGIN_PX), maxY);
+  const ax = pos.anchorX === "left" ? "left" : "right";
+  const ay = pos.anchorY === "top" ? "top" : "bottom";
+  // The default wrap CSS at line ~1605 uses `!important` for bottom/right, so
+  // inline overrides must also be !important to win the cascade.
+  target.style.setProperty(ax, `${offsetX}px`, "important");
+  target.style.setProperty(ay, `${offsetY}px`, "important");
+  target.style.setProperty(ax === "left" ? "right" : "left", "auto", "important");
+  target.style.setProperty(ay === "top" ? "bottom" : "top", "auto", "important");
+  target.setAttribute("data-broom-anchor-x", ax);
+  target.setAttribute("data-broom-anchor-y", ay);
+  applyToastSide(ax, ay);
+  positionSettingsPopover(document.getElementById(SETTINGS_ID));
+}
+
+// Position the settings popover adjacent to the launcher icon. The popover
+// hugs the same horizontal edge as the launcher (right-aligned if launcher is
+// in the right half of the viewport, left-aligned otherwise) and sits above
+// when the launcher is in the bottom half / below when in the top half.
+const SETTINGS_POPOVER_GAP_PX = 20;
+const SETTINGS_POPOVER_WIDTH_PX = 280;
+
+function positionSettingsPopover(pop) {
+  if (!pop) return;
+  const launcher = document.getElementById(LAUNCHER_WRAP_ID);
+  if (!launcher) return;
+  const lr = launcher.getBoundingClientRect();
+  const vw = window.innerWidth;
+  const vh = window.innerHeight;
+  const placeAbove = (lr.top + lr.height / 2) >= vh / 2;
+  const alignRight = (lr.left + lr.width / 2) >= vw / 2;
+  const maxOffset = Math.max(LAUNCHER_MARGIN_PX, vw - SETTINGS_POPOVER_WIDTH_PX - LAUNCHER_MARGIN_PX);
+
+  if (placeAbove) {
+    pop.style.setProperty("bottom", `${Math.max(LAUNCHER_MARGIN_PX, vh - lr.top + SETTINGS_POPOVER_GAP_PX)}px`, "important");
+    pop.style.setProperty("top", "auto", "important");
+  } else {
+    pop.style.setProperty("top", `${Math.max(LAUNCHER_MARGIN_PX, lr.bottom + SETTINGS_POPOVER_GAP_PX)}px`, "important");
+    pop.style.setProperty("bottom", "auto", "important");
+  }
+  if (alignRight) {
+    const right = Math.min(maxOffset, Math.max(LAUNCHER_MARGIN_PX, vw - lr.right));
+    pop.style.setProperty("right", `${right}px`, "important");
+    pop.style.setProperty("left", "auto", "important");
+  } else {
+    const left = Math.min(maxOffset, Math.max(LAUNCHER_MARGIN_PX, lr.left));
+    pop.style.setProperty("left", `${left}px`, "important");
+    pop.style.setProperty("right", "auto", "important");
+  }
+}
+
+function attachLauncherDragHandlers(wrap, main, closeFan) {
+  main.addEventListener("pointerdown", (e) => {
+    if (e.button !== undefined && e.button !== 0) return;
+    if (activeLauncherDrag) return;
+
+    const state = {
+      wrap,
+      main,
+      closeFan,
+      pointerId: e.pointerId,
+      startX: e.clientX,
+      startY: e.clientY,
+      dragging: false,
+      offsetX: 0,
+      offsetY: 0,
+      _suppressSelect: null
+    };
+
+    const onMove = (mv) => {
+      if (mv.pointerId !== state.pointerId) return;
+      if (!state.dragging) {
+        const dx = mv.clientX - state.startX;
+        const dy = mv.clientY - state.startY;
+        if (dx * dx + dy * dy < PLANT_DRAG_THRESHOLD_PX * PLANT_DRAG_THRESHOLD_PX) return;
+        beginLauncherDrag(state, mv);
+      } else {
+        updateLauncherDragPosition(state, mv);
+      }
+    };
+
+    const onUp = (up) => {
+      if (up.pointerId !== state.pointerId) return;
+      cleanupListeners();
+      if (state.dragging) {
+        up.preventDefault?.();
+        up.stopPropagation?.();
+        completeLauncherDrop(state);
+      }
+    };
+
+    const onCancel = (cn) => {
+      if (cn.pointerId !== state.pointerId) return;
+      cleanupListeners();
+      if (state.dragging) abortLauncherDrag(state);
+    };
+
+    const onEsc = (ke) => {
+      if (ke.key === "Escape" && state.dragging) {
+        ke.preventDefault();
+        ke.stopPropagation();
+        cleanupListeners();
+        abortLauncherDrag(state);
+      }
+    };
+
+    const cleanupListeners = () => {
+      window.removeEventListener("pointermove", onMove, true);
+      window.removeEventListener("pointerup", onUp, true);
+      window.removeEventListener("pointercancel", onCancel, true);
+      window.removeEventListener("keydown", onEsc, true);
+    };
+
+    window.addEventListener("pointermove", onMove, true);
+    window.addEventListener("pointerup", onUp, true);
+    window.addEventListener("pointercancel", onCancel, true);
+    window.addEventListener("keydown", onEsc, true);
+  });
+}
+
+function beginLauncherDrag(state, mv) {
+  state.dragging = true;
+  activeLauncherDrag = state;
+  try { state.main.setPointerCapture(state.pointerId); } catch { /* */ }
+
+  state.closeFan?.();
+  state.wrap.classList.add("broom-dragging");
+  document.documentElement.classList.add("broom-launcher-dragging");
+
+  try { window.getSelection?.()?.removeAllRanges?.(); } catch { /* */ }
+  const swallow = (ev) => { ev.preventDefault(); };
+  state._suppressSelect = swallow;
+  document.addEventListener("selectstart", swallow, true);
+  document.addEventListener("dragstart", swallow, true);
+
+  const rect = state.wrap.getBoundingClientRect();
+  // Compute the pointer-to-wrap offset from the threshold-crossing position,
+  // not the pointerdown position. By the time we begin dragging, the pointer
+  // has already moved past the threshold — anchoring to startX would make the
+  // icon "catch up" to the pointer in one frame (a visible 5–8px jump).
+  state.offsetX = mv.clientX - rect.left;
+  state.offsetY = mv.clientY - rect.top;
+  // Switch to top/left positioning while dragging — we re-derive corner-relative
+  // anchor on drop. !important is required to beat the launcher wrap's CSS.
+  state.wrap.style.setProperty("right", "auto", "important");
+  state.wrap.style.setProperty("bottom", "auto", "important");
+  updateLauncherDragPosition(state, mv);
+}
+
+function updateLauncherDragPosition(state, mv) {
+  const vw = window.innerWidth;
+  const vh = window.innerHeight;
+  let left = mv.clientX - state.offsetX;
+  let top = mv.clientY - state.offsetY;
+  const maxX = Math.max(LAUNCHER_MARGIN_PX, vw - LAUNCHER_SIZE_PX - LAUNCHER_MARGIN_PX);
+  const maxY = Math.max(LAUNCHER_MARGIN_PX, vh - LAUNCHER_SIZE_PX - LAUNCHER_MARGIN_PX);
+  left = Math.min(Math.max(left, LAUNCHER_MARGIN_PX), maxX);
+  top = Math.min(Math.max(top, LAUNCHER_MARGIN_PX), maxY);
+  state.wrap.style.setProperty("left", `${left}px`, "important");
+  state.wrap.style.setProperty("top", `${top}px`, "important");
+}
+
+function completeLauncherDrop(state) {
+  releaseLauncherDragGuards(state);
+  state.wrap.classList.remove("broom-dragging");
+  document.documentElement.classList.remove("broom-launcher-dragging");
+  activeLauncherDrag = null;
+
+  const rect = state.wrap.getBoundingClientRect();
+  const cx = rect.left + rect.width / 2;
+  const cy = rect.top + rect.height / 2;
+  const vw = window.innerWidth;
+  const vh = window.innerHeight;
+  const anchorX = cx < vw / 2 ? "left" : "right";
+  const anchorY = cy < vh / 2 ? "top" : "bottom";
+  const offsetX = Math.round(anchorX === "left" ? rect.left : vw - rect.right);
+  const offsetY = Math.round(anchorY === "top" ? rect.top : vh - rect.bottom);
+  const nextPos = { anchorX, anchorY, offsetX, offsetY };
+
+  // Block the click handler that will fire right after pointerup.
+  launcherDragJustEnded = true;
+  queueMicrotask(() => { launcherDragJustEnded = false; });
+
+  // setPref updates cachedPrefs synchronously before the async storage write,
+  // so applyLauncherPlacement reads the new value immediately.
+  void setPref("launcherPos", nextPos);
+  applyLauncherPlacement(state.wrap);
+}
+
+function abortLauncherDrag(state) {
+  releaseLauncherDragGuards(state);
+  state.wrap.classList.remove("broom-dragging");
+  document.documentElement.classList.remove("broom-launcher-dragging");
+  activeLauncherDrag = null;
+  applyLauncherPlacement(state.wrap);
+}
+
+function releaseLauncherDragGuards(state) {
+  if (state && state._suppressSelect) {
+    document.removeEventListener("selectstart", state._suppressSelect, true);
+    document.removeEventListener("dragstart", state._suppressSelect, true);
+    state._suppressSelect = null;
+  }
+  try { window.getSelection?.()?.removeAllRanges?.(); } catch { /* */ }
+}
+
 function installLauncher() {
   if (document.getElementById(LAUNCHER_WRAP_ID)) return;
   ensurePickerStyles();
@@ -3715,6 +4002,10 @@ function installLauncher() {
     clearTimeout(collapseTimer);
     collapseTimer = setTimeout(() => wrap.classList.remove("broom-fan-open"), 220);
   };
+  const closeFan = () => {
+    clearTimeout(collapseTimer);
+    wrap.classList.remove("broom-fan-open");
+  };
 
   wrap.addEventListener("mouseenter", expand);
   wrap.addEventListener("mouseleave", collapse);
@@ -3722,6 +4013,8 @@ function installLauncher() {
   wrap.addEventListener("focusout", (e) => {
     if (!wrap.contains(e.relatedTarget)) collapse();
   });
+
+  attachLauncherDragHandlers(wrap, main, closeFan);
 
   // Hovering the floating broom icon dismisses the settings popover so the
   // user can click whatever's behind it without having to reach for an Esc.
@@ -3732,6 +4025,11 @@ function installLauncher() {
   });
 
   main.addEventListener("click", (e) => {
+    if (launcherDragJustEnded) {
+      e.preventDefault();
+      e.stopPropagation();
+      return;
+    }
     e.preventDefault();
     e.stopPropagation();
     main.classList.remove("squash");
@@ -3768,6 +4066,8 @@ function installLauncher() {
   });
 
   document.documentElement.appendChild(wrap);
+  applyLauncherPlacement(wrap);
+  window.addEventListener("resize", debounce(() => applyLauncherPlacement(wrap), 80));
   updateLauncherForShowChanges();
 }
 
@@ -3839,6 +4139,7 @@ function openSettingsPopover() {
     </div>
   `;
   document.documentElement.appendChild(pop);
+  positionSettingsPopover(pop);
 
   pop.querySelector('input[data-pref="soundEnabled"]').addEventListener("change", async (e) => {
     const enabled = !!e.currentTarget.checked;
@@ -4783,12 +5084,16 @@ chrome.storage.onChanged.addListener((changes, area) => {
   if (changes[RULES_KEY]) void refreshRules();
   if (changes[PREFS_KEY]) {
     const prevShow = cachedPrefs.showChanges !== false;
+    const prevPos = cachedPrefs.launcherPos;
     cachedPrefs = { ...DEFAULT_PREFS, ...(changes[PREFS_KEY].newValue || {}) };
     const nextShow = cachedPrefs.showChanges !== false;
     if (prevShow !== nextShow) {
       updateLauncherForShowChanges();
       if (nextShow) for (const r of appliedRules) applyRule(r);
       else for (const r of appliedRules) removeRule(r.id);
+    }
+    if (JSON.stringify(prevPos) !== JSON.stringify(cachedPrefs.launcherPos)) {
+      applyLauncherPlacement();
     }
   }
   // Pack changes from another tab: re-sync the local mirror + registries.

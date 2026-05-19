@@ -106,7 +106,7 @@ async function clearRulesForHost(hostname) {
 // ── Prefs (sound on/off, etc.) ───────────────────────────────────────────────
 
 const PREFS_KEY = "prefs";
-const DEFAULT_PREFS = { soundEnabled: true, showChanges: true, suspendKey: "KeyB", activePackId: null };
+const DEFAULT_PREFS = { soundEnabled: true, showChanges: true, suspendKey: "KeyB", activePackId: null, launcherPos: null, launcherDiscovered: false };
 let cachedPrefs = { ...DEFAULT_PREFS };
 
 async function loadPrefs() {
@@ -1341,7 +1341,8 @@ const SWEEP_ID = "broom-sweep";
 const UNDO_TOAST_ID = "broom-undo-toast";
 const SETTINGS_ID = "broom-settings";
 const BROOM_CURSOR_ID = "broom-cursor-follower";
-const OUR_UI_SELECTOR = `#${PANEL_ID},#${HIGHLIGHT_ID},#${LAUNCHER_ID},#${LAUNCHER_WRAP_ID},#${UNDO_TOAST_ID},#${SETTINGS_ID},#${BROOM_CURSOR_ID},[id^="${SWEEP_ID}"]`;
+const LOOK_DOWN_HINT_ID = "broom-look-down-hint";
+const OUR_UI_SELECTOR = `#${PANEL_ID},#${HIGHLIGHT_ID},#${LAUNCHER_ID},#${LAUNCHER_WRAP_ID},#${UNDO_TOAST_ID},#${SETTINGS_ID},#${BROOM_CURSOR_ID},#${LOOK_DOWN_HINT_ID},[id^="${SWEEP_ID}"]`;
 
 let undoToastTimer = null;
 let broomSession = []; // rules swept in the current/most-recent broom session
@@ -1631,7 +1632,7 @@ function pickerStylesheet() {
       line-height: 1 !important;
       cursor: pointer !important;
       user-select: none !important;
-      transition: transform 0.2s cubic-bezier(.4,1.6,.5,1), box-shadow 0.18s, background 0.18s, border-color 0.18s !important;
+      transition: transform 0.18s cubic-bezier(.2,.7,.2,1), box-shadow 0.18s, background 0.18s, border-color 0.18s !important;
       font-family: -apple-system, system-ui, sans-serif !important;
       padding: 0 !important;
       animation: bsweep-launcher-enter 0.85s cubic-bezier(.34,1.56,.64,1) both !important;
@@ -1643,6 +1644,10 @@ function pickerStylesheet() {
         0 6px 14px rgba(15,23,42,0.18),
         inset 0 0 0 1px rgba(255,255,255,0.7) !important;
       border-color: rgba(107, 67, 33, 0.55) !important;
+      /* Bouncy easing applies only on the way IN to :hover. On the way out
+         the base rule's smooth easing takes over, so the icon doesn't dip
+         below scale 1.0 and wobble (the "jump up and down" on unhover/drop). */
+      transition: transform 0.2s cubic-bezier(.4,1.6,.5,1), box-shadow 0.18s, background 0.18s, border-color 0.18s !important;
     }
     #${LAUNCHER_ID}:active { transform: scale(0.92) rotate(-12deg) !important; }
     #${LAUNCHER_ID}.squash { animation: bsweep-launcher-squash 0.32s cubic-bezier(.34,1.56,.64,1) !important; }
@@ -1744,6 +1749,39 @@ function pickerStylesheet() {
     #${LAUNCHER_WRAP_ID}.broom-fan-open .broom-fan-chip:nth-child(2) { transition-delay: 120ms; }
     #${LAUNCHER_WRAP_ID}.broom-fan-open .broom-fan-chip:nth-child(3) { transition-delay: 60ms; }
     #${LAUNCHER_WRAP_ID}.broom-fan-open .broom-fan-chip:nth-child(4) { transition-delay: 0ms; }
+    /* Fan reorientation: when the launcher is dragged to a non-default corner,
+       flip the fan's horizontal/vertical anchor so chips never expand off-screen.
+       column-reverse keeps the chip closest to the broom icon at the visual top
+       when the fan opens downward; the nth-child delays invert to match so the
+       cascade still emanates from the icon. */
+    #${LAUNCHER_WRAP_ID}[data-broom-anchor-x="left"] .broom-fan {
+      right: auto !important;
+      left: 0 !important;
+      align-items: flex-start !important;
+    }
+    #${LAUNCHER_WRAP_ID}[data-broom-anchor-y="top"] .broom-fan {
+      bottom: auto !important;
+      top: 60px !important;
+      flex-direction: column-reverse !important;
+    }
+    #${LAUNCHER_WRAP_ID}[data-broom-anchor-y="top"].broom-fan-open .broom-fan-chip:nth-child(1) { transition-delay: 0ms; }
+    #${LAUNCHER_WRAP_ID}[data-broom-anchor-y="top"].broom-fan-open .broom-fan-chip:nth-child(2) { transition-delay: 60ms; }
+    #${LAUNCHER_WRAP_ID}[data-broom-anchor-y="top"].broom-fan-open .broom-fan-chip:nth-child(3) { transition-delay: 120ms; }
+    #${LAUNCHER_WRAP_ID}[data-broom-anchor-y="top"].broom-fan-open .broom-fan-chip:nth-child(4) { transition-delay: 180ms; }
+    /* Drag visuals — intentionally avoid changing transform here. The base
+       launcher rule transitions transform with an overshoot easing
+       (cubic-bezier(.4, 1.6, .5, 1)), so any scale change here would snap back
+       with a visible bounce on drop. Shadow + border + the grabbing cursor are
+       enough to communicate dragging. */
+    #${LAUNCHER_WRAP_ID}.broom-dragging #${LAUNCHER_ID} {
+      box-shadow:
+        0 22px 50px rgba(15,23,42,0.38),
+        0 8px 18px rgba(15,23,42,0.22),
+        inset 0 0 0 1px rgba(255,255,255,0.7) !important;
+      border-color: rgba(107, 67, 33, 0.55) !important;
+      animation: none !important;
+    }
+    html.broom-launcher-dragging, html.broom-launcher-dragging * { cursor: grabbing !important; }
     #${LAUNCHER_WRAP_ID} .broom-fan-chip[data-mode="plant"]:hover {
       background: linear-gradient(135deg, rgba(108,197,81,0.22), rgba(56,161,105,0.22)) !important;
       border-color: rgba(56,161,105,0.6) !important;
@@ -2917,6 +2955,98 @@ function pickerStylesheet() {
     #${UNDO_TOAST_ID} .but-close:active { transform: scale(0.9); }
     html.broom-picking #${UNDO_TOAST_ID} .but-close { cursor: pointer !important; }
 
+    /* When the broom is dragged to the bottom-left (where toasts normally live),
+       flip toasts to the bottom-right so the icon doesn't cover them. */
+    html[data-broom-toast-side="right"] #${PLANT_TOAST_ID},
+    html[data-broom-toast-side="right"] #${UNDO_TOAST_ID} {
+      left: auto !important;
+      right: 22px !important;
+    }
+
+    /* ── "Look down" hint toast (Safari toolbar nudge) ─────────────
+       Shown when the user opens the Safari toolbar popover so they
+       discover the floating broom at the bottom of the page. Anchored
+       to the top-right because that's where Safari renders the
+       extension popover. */
+    #${LOOK_DOWN_HINT_ID} {
+      all: initial !important;
+      position: fixed !important;
+      top: 16px !important;
+      right: 16px !important;
+      max-width: 280px !important;
+      z-index: 2147483647 !important;
+      display: inline-flex !important;
+      align-items: center !important;
+      gap: 10px !important;
+      padding: 10px 12px 10px 14px !important;
+      border-radius: 14px !important;
+      background: rgba(15,23,42,0.94) !important;
+      color: #f8fafc !important;
+      border: 1px solid rgba(250,204,21,0.45) !important;
+      border-top: 4px solid #facc15 !important;
+      box-shadow: 0 16px 40px rgba(15,23,42,0.32), 0 2px 8px rgba(15,23,42,0.18) !important;
+      font: 600 13px/1.3 -apple-system, system-ui, sans-serif !important;
+      backdrop-filter: blur(14px) saturate(1.3) !important;
+      -webkit-backdrop-filter: blur(14px) saturate(1.3) !important;
+      animation: broom-look-down-in 0.36s cubic-bezier(.34,1.56,.64,1) !important;
+    }
+    /* Small upward-pointing tail that hints "this is from the toolbar
+       button you just clicked". We anchor it near the right edge of the
+       toast, roughly under the Safari extensions button. */
+    #${LOOK_DOWN_HINT_ID}::before {
+      content: "" !important;
+      position: absolute !important;
+      top: -7px !important;
+      right: 24px !important;
+      width: 12px !important;
+      height: 12px !important;
+      background: #facc15 !important;
+      transform: rotate(45deg) !important;
+      border-top-left-radius: 2px !important;
+      box-shadow: -1px -1px 0 rgba(250,204,21,0.45) !important;
+    }
+    #${LOOK_DOWN_HINT_ID}.bldh-leaving {
+      animation: broom-toast-out 0.22s ease-in forwards !important;
+    }
+    #${LOOK_DOWN_HINT_ID} .bldh-msg {
+      flex: 1 1 auto !important;
+      color: #f8fafc !important;
+      font: 600 13px/1.35 -apple-system, system-ui, sans-serif !important;
+    }
+    #${LOOK_DOWN_HINT_ID} .bldh-emoji {
+      font-size: 18px !important;
+      line-height: 1 !important;
+      display: inline-block !important;
+      animation: broom-look-down-peek 1.6s ease-in-out 0.4s infinite !important;
+      transform-origin: 50% 70% !important;
+    }
+    #${LOOK_DOWN_HINT_ID} .bldh-close {
+      all: unset;
+      cursor: pointer;
+      width: 22px;
+      height: 22px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 50%;
+      font: 600 16px/1 -apple-system, system-ui, sans-serif;
+      color: rgba(248,250,252,0.7);
+      background: rgba(248,250,252,0.08);
+      margin-left: 4px;
+      transition: background 0.12s, color 0.12s, transform 0.1s;
+    }
+    #${LOOK_DOWN_HINT_ID} .bldh-close:hover { background: rgba(248,250,252,0.18); color: #f8fafc; }
+    #${LOOK_DOWN_HINT_ID} .bldh-close:active { transform: scale(0.9); }
+    @keyframes broom-look-down-in {
+      0%   { opacity: 0; transform: translateY(-14px) scale(0.94); }
+      100% { opacity: 1; transform: translateY(0)   scale(1); }
+    }
+    @keyframes broom-look-down-peek {
+      0%, 60%, 100% { transform: translateY(0); }
+      75%           { transform: translateY(4px); }
+      85%           { transform: translateY(2px); }
+    }
+
     /* ── Restore-mode overlay ────────────────── */
     .broom-restore-overlay {
       position: fixed !important;
@@ -2982,7 +3112,9 @@ function pickerStylesheet() {
       .broom-plant-slot.broom-plant-settle > .broom-plant > .broom-plant-foliage,
       .broom-restore-overlay, .broom-restore-overlay.broom-restore-leaving, .broom-restore-plus,
       #${UNDO_TOAST_ID}, #${UNDO_TOAST_ID}.but-leaving,
-      #${PLANT_TOAST_ID}, #${PLANT_TOAST_ID}.bpt-leaving {
+      #${PLANT_TOAST_ID}, #${PLANT_TOAST_ID}.bpt-leaving,
+      #${LOOK_DOWN_HINT_ID}, #${LOOK_DOWN_HINT_ID}.bldh-leaving,
+      #${LOOK_DOWN_HINT_ID} .bldh-emoji {
         animation: none !important;
         transition: none !important;
       }
@@ -3669,6 +3801,248 @@ function globalKeydown(e) {
 
 // ── Always-present launcher ───────────────────────────────────────────────────
 
+// Drag-to-reposition state. Position is stored in cachedPrefs.launcherPos as
+// corner-relative offsets, so the icon "sticks" to the nearest corner across
+// window resizes and reloads. Default-null = bottom-right via CSS.
+const LAUNCHER_MARGIN_PX = 8;
+const LAUNCHER_SIZE_PX = 54;
+let launcherDragJustEnded = false;
+let activeLauncherDrag = null;
+
+function applyToastSide(anchorX, anchorY) {
+  if (anchorY === "bottom" && anchorX === "left") {
+    document.documentElement.setAttribute("data-broom-toast-side", "right");
+  } else {
+    document.documentElement.removeAttribute("data-broom-toast-side");
+  }
+}
+
+function applyLauncherPlacement(wrap) {
+  const target = wrap || document.getElementById(LAUNCHER_WRAP_ID);
+  if (!target) return;
+  const pos = cachedPrefs.launcherPos;
+  if (!pos) {
+    target.style.removeProperty("top");
+    target.style.removeProperty("left");
+    target.style.removeProperty("right");
+    target.style.removeProperty("bottom");
+    target.removeAttribute("data-broom-anchor-x");
+    target.removeAttribute("data-broom-anchor-y");
+    applyToastSide("right", "bottom");
+    positionSettingsPopover(document.getElementById(SETTINGS_ID));
+    return;
+  }
+  const vw = window.innerWidth;
+  const vh = window.innerHeight;
+  const maxX = Math.max(LAUNCHER_MARGIN_PX, vw - LAUNCHER_SIZE_PX - LAUNCHER_MARGIN_PX);
+  const maxY = Math.max(LAUNCHER_MARGIN_PX, vh - LAUNCHER_SIZE_PX - LAUNCHER_MARGIN_PX);
+  const offsetX = Math.min(Math.max(pos.offsetX, LAUNCHER_MARGIN_PX), maxX);
+  const offsetY = Math.min(Math.max(pos.offsetY, LAUNCHER_MARGIN_PX), maxY);
+  const ax = pos.anchorX === "left" ? "left" : "right";
+  const ay = pos.anchorY === "top" ? "top" : "bottom";
+  // The default wrap CSS at line ~1605 uses `!important` for bottom/right, so
+  // inline overrides must also be !important to win the cascade.
+  target.style.setProperty(ax, `${offsetX}px`, "important");
+  target.style.setProperty(ay, `${offsetY}px`, "important");
+  target.style.setProperty(ax === "left" ? "right" : "left", "auto", "important");
+  target.style.setProperty(ay === "top" ? "bottom" : "top", "auto", "important");
+  target.setAttribute("data-broom-anchor-x", ax);
+  target.setAttribute("data-broom-anchor-y", ay);
+  applyToastSide(ax, ay);
+  positionSettingsPopover(document.getElementById(SETTINGS_ID));
+}
+
+// Position the settings popover adjacent to the launcher icon. The popover
+// hugs the same horizontal edge as the launcher (right-aligned if launcher is
+// in the right half of the viewport, left-aligned otherwise) and sits above
+// when the launcher is in the bottom half / below when in the top half.
+const SETTINGS_POPOVER_GAP_PX = 20;
+const SETTINGS_POPOVER_WIDTH_PX = 280;
+
+function positionSettingsPopover(pop) {
+  if (!pop) return;
+  const launcher = document.getElementById(LAUNCHER_WRAP_ID);
+  if (!launcher) return;
+  const lr = launcher.getBoundingClientRect();
+  const vw = window.innerWidth;
+  const vh = window.innerHeight;
+  const placeAbove = (lr.top + lr.height / 2) >= vh / 2;
+  const alignRight = (lr.left + lr.width / 2) >= vw / 2;
+  const maxOffset = Math.max(LAUNCHER_MARGIN_PX, vw - SETTINGS_POPOVER_WIDTH_PX - LAUNCHER_MARGIN_PX);
+
+  if (placeAbove) {
+    pop.style.setProperty("bottom", `${Math.max(LAUNCHER_MARGIN_PX, vh - lr.top + SETTINGS_POPOVER_GAP_PX)}px`, "important");
+    pop.style.setProperty("top", "auto", "important");
+  } else {
+    pop.style.setProperty("top", `${Math.max(LAUNCHER_MARGIN_PX, lr.bottom + SETTINGS_POPOVER_GAP_PX)}px`, "important");
+    pop.style.setProperty("bottom", "auto", "important");
+  }
+  if (alignRight) {
+    const right = Math.min(maxOffset, Math.max(LAUNCHER_MARGIN_PX, vw - lr.right));
+    pop.style.setProperty("right", `${right}px`, "important");
+    pop.style.setProperty("left", "auto", "important");
+  } else {
+    const left = Math.min(maxOffset, Math.max(LAUNCHER_MARGIN_PX, lr.left));
+    pop.style.setProperty("left", `${left}px`, "important");
+    pop.style.setProperty("right", "auto", "important");
+  }
+}
+
+function attachLauncherDragHandlers(wrap, main, closeFan) {
+  main.addEventListener("pointerdown", (e) => {
+    if (e.button !== undefined && e.button !== 0) return;
+    if (activeLauncherDrag) return;
+
+    const state = {
+      wrap,
+      main,
+      closeFan,
+      pointerId: e.pointerId,
+      startX: e.clientX,
+      startY: e.clientY,
+      dragging: false,
+      offsetX: 0,
+      offsetY: 0,
+      _suppressSelect: null
+    };
+
+    const onMove = (mv) => {
+      if (mv.pointerId !== state.pointerId) return;
+      if (!state.dragging) {
+        const dx = mv.clientX - state.startX;
+        const dy = mv.clientY - state.startY;
+        if (dx * dx + dy * dy < PLANT_DRAG_THRESHOLD_PX * PLANT_DRAG_THRESHOLD_PX) return;
+        beginLauncherDrag(state, mv);
+      } else {
+        updateLauncherDragPosition(state, mv);
+      }
+    };
+
+    const onUp = (up) => {
+      if (up.pointerId !== state.pointerId) return;
+      cleanupListeners();
+      if (state.dragging) {
+        up.preventDefault?.();
+        up.stopPropagation?.();
+        completeLauncherDrop(state);
+      }
+    };
+
+    const onCancel = (cn) => {
+      if (cn.pointerId !== state.pointerId) return;
+      cleanupListeners();
+      if (state.dragging) abortLauncherDrag(state);
+    };
+
+    const onEsc = (ke) => {
+      if (ke.key === "Escape" && state.dragging) {
+        ke.preventDefault();
+        ke.stopPropagation();
+        cleanupListeners();
+        abortLauncherDrag(state);
+      }
+    };
+
+    const cleanupListeners = () => {
+      window.removeEventListener("pointermove", onMove, true);
+      window.removeEventListener("pointerup", onUp, true);
+      window.removeEventListener("pointercancel", onCancel, true);
+      window.removeEventListener("keydown", onEsc, true);
+    };
+
+    window.addEventListener("pointermove", onMove, true);
+    window.addEventListener("pointerup", onUp, true);
+    window.addEventListener("pointercancel", onCancel, true);
+    window.addEventListener("keydown", onEsc, true);
+  });
+}
+
+function beginLauncherDrag(state, mv) {
+  state.dragging = true;
+  activeLauncherDrag = state;
+  try { state.main.setPointerCapture(state.pointerId); } catch { /* */ }
+
+  state.closeFan?.();
+  state.wrap.classList.add("broom-dragging");
+  document.documentElement.classList.add("broom-launcher-dragging");
+
+  try { window.getSelection?.()?.removeAllRanges?.(); } catch { /* */ }
+  const swallow = (ev) => { ev.preventDefault(); };
+  state._suppressSelect = swallow;
+  document.addEventListener("selectstart", swallow, true);
+  document.addEventListener("dragstart", swallow, true);
+
+  const rect = state.wrap.getBoundingClientRect();
+  // Compute the pointer-to-wrap offset from the threshold-crossing position,
+  // not the pointerdown position. By the time we begin dragging, the pointer
+  // has already moved past the threshold — anchoring to startX would make the
+  // icon "catch up" to the pointer in one frame (a visible 5–8px jump).
+  state.offsetX = mv.clientX - rect.left;
+  state.offsetY = mv.clientY - rect.top;
+  // Switch to top/left positioning while dragging — we re-derive corner-relative
+  // anchor on drop. !important is required to beat the launcher wrap's CSS.
+  state.wrap.style.setProperty("right", "auto", "important");
+  state.wrap.style.setProperty("bottom", "auto", "important");
+  updateLauncherDragPosition(state, mv);
+}
+
+function updateLauncherDragPosition(state, mv) {
+  const vw = window.innerWidth;
+  const vh = window.innerHeight;
+  let left = mv.clientX - state.offsetX;
+  let top = mv.clientY - state.offsetY;
+  const maxX = Math.max(LAUNCHER_MARGIN_PX, vw - LAUNCHER_SIZE_PX - LAUNCHER_MARGIN_PX);
+  const maxY = Math.max(LAUNCHER_MARGIN_PX, vh - LAUNCHER_SIZE_PX - LAUNCHER_MARGIN_PX);
+  left = Math.min(Math.max(left, LAUNCHER_MARGIN_PX), maxX);
+  top = Math.min(Math.max(top, LAUNCHER_MARGIN_PX), maxY);
+  state.wrap.style.setProperty("left", `${left}px`, "important");
+  state.wrap.style.setProperty("top", `${top}px`, "important");
+}
+
+function completeLauncherDrop(state) {
+  releaseLauncherDragGuards(state);
+  state.wrap.classList.remove("broom-dragging");
+  document.documentElement.classList.remove("broom-launcher-dragging");
+  activeLauncherDrag = null;
+
+  const rect = state.wrap.getBoundingClientRect();
+  const cx = rect.left + rect.width / 2;
+  const cy = rect.top + rect.height / 2;
+  const vw = window.innerWidth;
+  const vh = window.innerHeight;
+  const anchorX = cx < vw / 2 ? "left" : "right";
+  const anchorY = cy < vh / 2 ? "top" : "bottom";
+  const offsetX = Math.round(anchorX === "left" ? rect.left : vw - rect.right);
+  const offsetY = Math.round(anchorY === "top" ? rect.top : vh - rect.bottom);
+  const nextPos = { anchorX, anchorY, offsetX, offsetY };
+
+  // Block the click handler that will fire right after pointerup.
+  launcherDragJustEnded = true;
+  queueMicrotask(() => { launcherDragJustEnded = false; });
+
+  // setPref updates cachedPrefs synchronously before the async storage write,
+  // so applyLauncherPlacement reads the new value immediately.
+  void setPref("launcherPos", nextPos);
+  applyLauncherPlacement(state.wrap);
+}
+
+function abortLauncherDrag(state) {
+  releaseLauncherDragGuards(state);
+  state.wrap.classList.remove("broom-dragging");
+  document.documentElement.classList.remove("broom-launcher-dragging");
+  activeLauncherDrag = null;
+  applyLauncherPlacement(state.wrap);
+}
+
+function releaseLauncherDragGuards(state) {
+  if (state && state._suppressSelect) {
+    document.removeEventListener("selectstart", state._suppressSelect, true);
+    document.removeEventListener("dragstart", state._suppressSelect, true);
+    state._suppressSelect = null;
+  }
+  try { window.getSelection?.()?.removeAllRanges?.(); } catch { /* */ }
+}
+
 function installLauncher() {
   if (document.getElementById(LAUNCHER_WRAP_ID)) return;
   ensurePickerStyles();
@@ -3710,10 +4084,15 @@ function installLauncher() {
   const expand = () => {
     clearTimeout(collapseTimer);
     wrap.classList.add("broom-fan-open");
+    markLauncherDiscovered();
   };
   const collapse = () => {
     clearTimeout(collapseTimer);
     collapseTimer = setTimeout(() => wrap.classList.remove("broom-fan-open"), 220);
+  };
+  const closeFan = () => {
+    clearTimeout(collapseTimer);
+    wrap.classList.remove("broom-fan-open");
   };
 
   wrap.addEventListener("mouseenter", expand);
@@ -3722,6 +4101,8 @@ function installLauncher() {
   wrap.addEventListener("focusout", (e) => {
     if (!wrap.contains(e.relatedTarget)) collapse();
   });
+
+  attachLauncherDragHandlers(wrap, main, closeFan);
 
   // Hovering the floating broom icon dismisses the settings popover so the
   // user can click whatever's behind it without having to reach for an Esc.
@@ -3732,8 +4113,14 @@ function installLauncher() {
   });
 
   main.addEventListener("click", (e) => {
+    if (launcherDragJustEnded) {
+      e.preventDefault();
+      e.stopPropagation();
+      return;
+    }
     e.preventDefault();
     e.stopPropagation();
+    markLauncherDiscovered();
     main.classList.remove("squash");
     void main.offsetWidth;
     main.classList.add("squash");
@@ -3768,6 +4155,8 @@ function installLauncher() {
   });
 
   document.documentElement.appendChild(wrap);
+  applyLauncherPlacement(wrap);
+  window.addEventListener("resize", debounce(() => applyLauncherPlacement(wrap), 80));
   updateLauncherForShowChanges();
 }
 
@@ -3839,6 +4228,7 @@ function openSettingsPopover() {
     </div>
   `;
   document.documentElement.appendChild(pop);
+  positionSettingsPopover(pop);
 
   pop.querySelector('input[data-pref="soundEnabled"]').addEventListener("change", async (e) => {
     const enabled = !!e.currentTarget.checked;
@@ -4624,6 +5014,61 @@ function hideUndoToast() {
   setTimeout(() => toast.remove(), 220);
 }
 
+// ── "Look down" hint toast (Safari-only nudge) ───────────────────────────────
+// Triggered by the Safari popover via a BROOM_HINT_LOOK_DOWN message. We use it
+// to point new users at the floating broom launcher anchored to the bottom of
+// the page. Once the user actually interacts with the launcher we flip
+// cachedPrefs.launcherDiscovered and stop showing this forever.
+
+let lookDownHintTimer = null;
+
+function showLookDownHint() {
+  if (cachedPrefs.launcherDiscovered) return;
+  ensurePickerStyles();
+  hideLookDownHint();
+
+  const toast = document.createElement("div");
+  toast.id = LOOK_DOWN_HINT_ID;
+  toast.setAttribute("role", "status");
+  toast.setAttribute("aria-live", "polite");
+  toast.innerHTML = `
+    <span class="bldh-msg">Have you looked at the bottom of the screen? <span class="bldh-emoji" aria-hidden="true">👀</span></span>
+    <button class="bldh-close" data-act="close" type="button" aria-label="Dismiss">×</button>
+  `;
+  document.documentElement.appendChild(toast);
+
+  toast.querySelector('[data-act="close"]').addEventListener("click", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    hideLookDownHint();
+  });
+  toast.addEventListener("mouseenter", () => clearTimeout(lookDownHintTimer));
+  toast.addEventListener("mouseleave", armLookDownHintDismiss);
+  armLookDownHintDismiss();
+}
+
+function armLookDownHintDismiss() {
+  clearTimeout(lookDownHintTimer);
+  // Long-ish: the user may still be inside the Safari popover when this fires.
+  // Once they close the popover the toast is right there waiting for them.
+  lookDownHintTimer = setTimeout(hideLookDownHint, 10000);
+}
+
+function hideLookDownHint() {
+  clearTimeout(lookDownHintTimer);
+  lookDownHintTimer = null;
+  const toast = document.getElementById(LOOK_DOWN_HINT_ID);
+  if (!toast) return;
+  toast.classList.add("bldh-leaving");
+  setTimeout(() => toast.remove(), 220);
+}
+
+function markLauncherDiscovered() {
+  if (cachedPrefs.launcherDiscovered) return;
+  void setPref("launcherDiscovered", true);
+  hideLookDownHint();
+}
+
 const PLANT_TOAST_ID = "broom-plant-toast";
 let plantToastTimer = null;
 
@@ -4713,6 +5158,17 @@ async function init() {
   appliedRules = await getRulesForHost(location.hostname);
   for (const r of appliedRules) applyRule(r);
 
+  // Backfill: anyone who already has any rule has clearly already found the
+  // launcher, so don't nudge them with the "look down" hint on the next
+  // popover open.
+  if (!cachedPrefs.launcherDiscovered) {
+    try {
+      const all = await chrome.storage.local.get(RULES_KEY);
+      const map = all[RULES_KEY] || {};
+      if (Object.keys(map).length > 0) void setPref("launcherDiscovered", true);
+    } catch { /* never break init */ }
+  }
+
   void trackFirstInstallAndDaily();
 
   // Persistent UI: launcher + global keyboard handler
@@ -4775,6 +5231,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   }
   if (msg?.type === "CONTENT_APPLY_RULE") { applyRule(msg.rule); void refreshRules(); sendResponse({ type: "ACK" }); return true; }
   if (msg?.type === "CONTENT_REMOVE_RULE") { removeRule(msg.ruleId); void refreshRules(); sendResponse({ type: "ACK" }); return true; }
+  if (msg?.type === "BROOM_HINT_LOOK_DOWN") { showLookDownHint(); sendResponse({ type: "ACK" }); return true; }
   return false;
 });
 
@@ -4783,12 +5240,16 @@ chrome.storage.onChanged.addListener((changes, area) => {
   if (changes[RULES_KEY]) void refreshRules();
   if (changes[PREFS_KEY]) {
     const prevShow = cachedPrefs.showChanges !== false;
+    const prevPos = cachedPrefs.launcherPos;
     cachedPrefs = { ...DEFAULT_PREFS, ...(changes[PREFS_KEY].newValue || {}) };
     const nextShow = cachedPrefs.showChanges !== false;
     if (prevShow !== nextShow) {
       updateLauncherForShowChanges();
       if (nextShow) for (const r of appliedRules) applyRule(r);
       else for (const r of appliedRules) removeRule(r.id);
+    }
+    if (JSON.stringify(prevPos) !== JSON.stringify(cachedPrefs.launcherPos)) {
+      applyLauncherPlacement();
     }
   }
   // Pack changes from another tab: re-sync the local mirror + registries.
