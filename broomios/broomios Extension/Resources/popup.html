@@ -1,0 +1,41 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Broom</title>
+    <style>
+      body { font: 15px -apple-system, system-ui, sans-serif; min-width: 260px; margin: 0; padding: 14px 16px; color: #111; }
+      .switch-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; cursor: pointer; -webkit-tap-highlight-color: transparent; }
+      .switch-label { font-weight: 600; }
+      .switch { position: relative; flex: none; width: 51px; height: 31px; }
+      .switch input { position: absolute; inset: 0; margin: 0; opacity: 0; cursor: pointer; }
+      .track { position: absolute; inset: 0; border-radius: 31px; background: #e5e5ea; transition: background 0.2s; pointer-events: none; }
+      .track::after { content: ""; position: absolute; top: 2px; left: 2px; width: 27px; height: 27px; border-radius: 50%; background: #fff; box-shadow: 0 2px 6px rgba(0,0,0,0.2); transition: transform 0.2s; }
+      .switch input:checked + .track { background: #34c759; }
+      .switch input:checked + .track::after { transform: translateX(20px); }
+      .switch input:focus-visible + .track { outline: 2px solid #2563eb; outline-offset: 2px; }
+      .toast { margin-top: 0; max-height: 0; opacity: 0; overflow: hidden; padding: 0 12px; border-radius: 10px; background: #1c1c1e; color: #fff; font-size: 13px; text-align: center; transition: opacity 0.2s, max-height 0.2s, margin-top 0.2s, padding 0.2s; }
+      .toast.show { margin-top: 12px; max-height: 60px; opacity: 1; padding: 8px 12px; }
+      @media (prefers-color-scheme: dark) {
+        body { background: #1c1c1e; color: #f2f2f7; }
+        .track { background: #39393d; }
+        .toast { background: #f2f2f7; color: #111; }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .track, .track::after, .toast { transition: none; }
+      }
+    </style>
+  </head>
+  <body>
+    <label class="switch-row">
+      <span class="switch-label">Show Broom</span>
+      <span class="switch">
+        <input type="checkbox" id="show-launcher" role="switch" checked />
+        <span class="track"></span>
+      </span>
+    </label>
+    <div class="toast" id="toast" role="status" aria-live="polite"></div>
+    <script src="popup.js"></script>
+  </body>
+</html>
